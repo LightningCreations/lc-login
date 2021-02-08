@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use bytemuck::{Pod, Zeroable};
+use bytemuck::{bytes_of, Pod, Zeroable};
 use zeroize::Zeroizing;
 
 pub mod algorithms {
@@ -38,23 +38,29 @@ pub mod salting {
 pub struct PasswordHeader {
     pub version: u16,
     pub algorithm: u8,
-    pub salting_and_repetition: u8,
+    pub salt_and_repetition: u8,
     pub salt_size: u32,
 }
 
 pub const CURRENT_VERSION: u16 = 0;
 
-pub fn hash_passwd<W: Write>(
+pub fn write_password<W: Write>(
     passwd: &str,
     salt: &[u8],
     algorithm: u8,
     salt_and_repetition: u8,
+    mut w: W,
 ) -> std::io::Result<()> {
     let salt_method = salt_and_repetition & salting::MASK;
     let rounds = 1u32 << (salt_and_repetition & salting::ROUNDS_MASK >> salting::ROUNDS_SHIFT);
-
+    let hdr = PasswordHeader {
+        version: CURRENT_VERSION,
+        algorithm,
+        salt_and_repetition,
+        salt_size: salt.len() as u32,
+    };
     let mut input = passwd.as_bytes();
-    let mut output = [0u8; 128];
+    let mut output = Zeroizing::new([0u8; 64]);
     for _ in 0..rounds {
         let size = input.len() + (32 - (input.len() % 32)) % 32 + salt.len();
         let mut bytes = Zeroizing::new(Vec::with_capacity(size));
@@ -72,7 +78,7 @@ pub fn hash_passwd<W: Write>(
             salting::HMAC => todo!("hmac is not implemented yet"),
             _ => panic!("Unsupported algorithm"),
         }
-        let mut output: &mut [u8] = &mut output;
+        let mut output: &mut [u8] = &mut *output;
         match algorithm {
             algorithms::SHA_224 => {
                 output = &mut output[0..28];
@@ -102,6 +108,9 @@ pub fn hash_passwd<W: Write>(
         }
         input = output;
     }
+    w.write_all(bytes_of(&hdr))?;
+    w.write_all(salt)?;
+    w.write_all(input)?;
 
     Ok(())
 }
