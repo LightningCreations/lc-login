@@ -65,7 +65,6 @@ pub fn write_password<W: Write>(
         let size = input.len() + (32 - (input.len() % 32)) % 32 + salt.len();
         let mut bytes = Zeroizing::new(Vec::with_capacity(size));
         bytes.extend_from_slice(input);
-        drop(input);
         match salt_method {
             salting::XOR => {
                 for i in 0..bytes.len() {
