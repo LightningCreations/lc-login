@@ -1,41 +1,35 @@
-use fake_enum::fake_enum;
+use bytemuck::{Pod, Zeroable};
 
-fake_enum! {
-    #[repr(u8)]
-    pub enum struct Algorithms{
-        Sha2_224 = 0,
-        Sha2_256 = 1,
-        Sha2_384 = 2,
-        Sha2_512 = 3,
-        Sha2_384_224 = 4,
-        Sha2_384_256 = 5,
-        Sha2_512_224 = 6,
-        Sha2_512_256 = 7,
-        Sha3_224 = 8,
-        Sha3_256 = 9,
-        Sha3_384 = 10,
-        Sha3_512 = 11,
-        Sha3_384_224 = 12,
-        Sha3_384_256 = 13,
-        Sha3_512_224 = 14,
-        Sha3_512_256 = 15,
+pub mod algorithms {
+    pub const SHA_224: u8 = 0;
+    pub const SHA_256: u8 = 1;
+    pub const SHA_384: u8 = 2;
+    pub const SHA_512: u8 = 3;
+    pub const SHA_384_224: u8 = 4;
+    pub const SHA_384_256: u8 = 5;
+    pub const SHA_512_224: u8 = 6;
+    pub const SHA_512_256: u8 = 7;
+    pub const USE_SHA3: u8 = 8;
 
+    pub const BLAKE2: u8 = 16;
 
-
-        Disable = 0xFF,
-    }
+    pub const DISABLED: u8 = 0xFF;
 }
 
-fake_enum! {
-    #[repr(u8)]
-    pub enum struct Salting{
-        Xor = 0,
-        Concat = 1,
-        Hmac = 2,
+pub mod salting {
+    pub const XOR: u8 = 0;
+    pub const CONCAT: u8 = 1;
+    pub const HMAC: u8 = 2;
 
-        Disable = 0x3F
-    }
+    pub const DISABLED: u8 = 0x7F;
+    pub const MASK: u8 = 0x7F;
+    pub const ROUNDS_MASK: u8 = 0x80;
 }
 
-pub const DEFAULT_ALGORITHM: Algorithms = Algorithms::Sha2_512;
-pub const DEFAULT_SALTING: Salting = Salting::Hmac;
+#[derive(Pod, Zeroable, Copy, Clone, Debug)]
+#[repr(C)]
+pub struct PasswordHeader {
+    pub version: u16,
+    pub algorithm: u8,
+    pub salting_and_repetition: u8,
+}

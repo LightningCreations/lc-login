@@ -12,6 +12,7 @@ install-dirs="0.2.1"
 libc = "0.2.85"
 fake-enum = "0.1.1"
 openssl = "0.10.32"
+bytemuck = {version="1.5.0",features=["derive"]}
 
 [build-dependencies]
 install-dirs={version="0.2.1",features=["serde"]}
