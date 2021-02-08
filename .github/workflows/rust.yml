@@ -12,13 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - name: Build
-        runs: cargo build 
+        run: cargo build 
   clipy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - name: Build
-        runs: cargo clippy
+        run: cargo clippy
   rustfmt:
     runs-on: ubuntu-latest
     steps:
