@@ -24,4 +24,4 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - name: Build
-        runs: cargo fmt -- --check  
+        run: cargo fmt -- --check  
