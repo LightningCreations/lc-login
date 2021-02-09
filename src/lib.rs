@@ -8,3 +8,5 @@ pub mod dirs;
 pub mod password;
 
 pub mod users;
+
+pub mod groups;

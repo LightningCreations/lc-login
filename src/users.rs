@@ -7,6 +7,8 @@ use std::{
 
 use std::os::unix::prelude::*;
 
+use itertools::Itertools;
+
 use crate::password::PasswordHeader;
 
 pub struct UserHandle {
@@ -226,5 +228,80 @@ impl UserHandle {
                 s.parse()
                     .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))
             })
+    }
+
+    pub fn primary_group(&self) -> std::io::Result<u32> {
+        let mut path = self.path.clone();
+        path.push("group");
+        std::fs::read_link(path)
+            .and_then(|e| {
+                e.file_name()
+                    .ok_or_else(|| {
+                        std::io::Error::new(ErrorKind::InvalidData, "Invalid path in symlink")
+                    })
+                    .map(|s| s.to_owned())
+            })
+            .and_then(|s| {
+                s.into_string().map_err(|_| {
+                    std::io::Error::new(ErrorKind::InvalidData, "Non-UTF path in symlink")
+                })
+            })
+            .and_then(|s| {
+                s.parse()
+                    .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))
+            })
+    }
+
+    pub fn secondary_groups(&self) -> std::io::Result<Vec<u32>> {
+        let mut path = self.path.clone();
+        path.push("groups");
+        let mut file = std::fs::File::open(path)?;
+        let mut bytes = String::new();
+        file.read_to_string(&mut bytes)?;
+        bytes
+            .split(',')
+            .map(|v| v.parse())
+            .collect::<Result<_, _>>()
+            .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))
+    }
+
+    pub fn set_primary_group(&mut self, group: u32) -> std::io::Result<()> {
+        let mut path = self.path.clone();
+        path.push("group");
+        let mut group_path = PathBuf::from(&*crate::dirs::GROUPS);
+        group_path.push(group.to_string());
+        std::os::unix::fs::symlink(group_path, path)
+    }
+
+    pub fn add_secondary_group(&mut self, group: u32) -> std::io::Result<()> {
+        let mut groups = self.secondary_groups()?;
+        groups.push(group);
+        groups.sort_unstable();
+        let mut path = self.path.clone();
+        path.push("groups");
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(
+            groups
+                .iter()
+                .dedup()
+                .map(|i| i.to_string())
+                .join(",")
+                .as_bytes(),
+        )
+    }
+
+    pub fn remove_secondary_group(&mut self, group: u32) -> std::io::Result<()> {
+        let groups = self.secondary_groups()?;
+        let mut path = self.path.clone();
+        path.push("groups");
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(
+            groups
+                .iter()
+                .filter(|v| **v != group)
+                .map(|i| i.to_string())
+                .join(",")
+                .as_bytes(),
+        )
     }
 }
