@@ -162,7 +162,7 @@ impl UserHandle {
         }
     }
 
-    pub fn set_passwd(&mut self, passwd: &str) -> std::io::Result<()> {
+    pub fn set_password(&mut self, passwd: &str) -> std::io::Result<()> {
         let mut path = self.path.clone();
         path.push("password-"); // Use the password write file, so that authenticate never observes a broken write
         let mut file = std::fs::OpenOptions::new()
