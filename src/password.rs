@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use bytemuck::{bytes_of, Pod, Zeroable};
+use bytemuck::{Pod, Zeroable};
 use zeroize::Zeroizing;
 
 pub mod algorithms {
@@ -42,7 +42,24 @@ pub struct PasswordHeader {
     pub salt_size: u32,
 }
 
+impl Default for PasswordHeader {
+    fn default() -> Self {
+        Self {
+            version: INVALID_VERSION,
+            algorithm: algorithms::DISABLED,
+            salt_and_repetition: salting::DISABLED | salting::ROUNDS_MASK,
+            salt_size: 0xFFFFFFFF,
+        }
+    }
+}
+
 pub const CURRENT_VERSION: u16 = 0;
+
+pub const INVALID_VERSION: u16 = 0xFFFF;
+
+pub const DEFAULT_ALGORITHM: u8 = algorithms::SHA_512;
+pub const DEFAULT_SALT: u8 = salting::CONCAT;
+pub const DEFAULT_ROUNDS: u8 = 4 << 5;
 
 pub fn write_password<W: Write>(
     passwd: &str,
@@ -53,12 +70,6 @@ pub fn write_password<W: Write>(
 ) -> std::io::Result<()> {
     let salt_method = salt_and_repetition & salting::MASK;
     let rounds = 1u32 << (salt_and_repetition & salting::ROUNDS_MASK >> salting::ROUNDS_SHIFT);
-    let hdr = PasswordHeader {
-        version: CURRENT_VERSION,
-        algorithm,
-        salt_and_repetition,
-        salt_size: salt.len() as u32,
-    };
     let mut input = passwd.as_bytes();
     let mut output = Zeroizing::new([0u8; 64]);
     for _ in 0..rounds {
@@ -107,8 +118,6 @@ pub fn write_password<W: Write>(
         }
         input = output;
     }
-    w.write_all(bytes_of(&hdr))?;
-    w.write_all(salt)?;
     w.write_all(input)?;
 
     Ok(())
