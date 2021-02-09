@@ -69,7 +69,8 @@ pub fn write_password<W: Write>(
     mut w: W,
 ) -> std::io::Result<()> {
     let salt_method = salt_and_repetition & salting::MASK;
-    let rounds = 1u32 << (salt_and_repetition & salting::ROUNDS_MASK >> salting::ROUNDS_SHIFT);
+    let rounds =
+        1u32 << (10 + (salt_and_repetition & salting::ROUNDS_MASK >> salting::ROUNDS_SHIFT));
     let mut input = passwd.as_bytes();
     let mut output = Zeroizing::new([0u8; 64]);
     for _ in 0..rounds {
