@@ -19,7 +19,7 @@ impl UserHandle {
     pub fn from_name<S: AsRef<OsStr>>(name: S) -> std::io::Result<Self> {
         let mut path = PathBuf::from(*crate::dirs::USERS);
         path.push(name.as_ref());
-        path = std::fs::read_link(path)?;
+        path = std::fs::read_link(&path).unwrap_or(path);
         Ok(Self { path })
     }
 

@@ -21,9 +21,16 @@ bytemuck = {version="1.5.0",features=["derive"]}
 zeroize = "1.2.0"
 defer = "0.1.0"
 itertools = "0.10.0"
+clap = "2.33.3"
 
 [build-dependencies]
 install-dirs={version="0.2.1",features=["serde"]}
 serde = {version="1.0.123",features=["derive"]}
 toml = "0.5.8"
 
+[[bin]]
+name = "su"
+path="src/su.rs"
+
+[lib]
+name = "login"
