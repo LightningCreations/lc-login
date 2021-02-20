@@ -208,7 +208,7 @@ impl UserHandle {
         Ok(())
     }
 
-    pub fn uid(&self) -> std::io::Result<u32> {
+    pub fn uid(&self) -> std::io::Result<libc::uid_t> {
         let mut path = self.path.clone();
         path.push("uid");
         std::fs::read_link(path)
@@ -230,7 +230,7 @@ impl UserHandle {
             })
     }
 
-    pub fn primary_group(&self) -> std::io::Result<u32> {
+    pub fn primary_group(&self) -> std::io::Result<libc::gid_t> {
         let mut path = self.path.clone();
         path.push("group");
         std::fs::read_link(path)
@@ -252,7 +252,7 @@ impl UserHandle {
             })
     }
 
-    pub fn secondary_groups(&self) -> std::io::Result<Vec<u32>> {
+    pub fn secondary_groups(&self) -> std::io::Result<Vec<libc::gid_t>> {
         let mut path = self.path.clone();
         path.push("groups");
         let mut file = std::fs::File::open(path)?;

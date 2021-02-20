@@ -9,6 +9,12 @@ use install_dirs::dirs::{CanonicalizationError, InstallDirs};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
+pub struct Config {
+    #[serde(default)]
+    pub dirs: Paths,
+}
+
+#[derive(Deserialize)]
 #[serde(default)]
 pub struct Paths {
     #[serde(flatten)]
@@ -90,13 +96,14 @@ impl Paths {
 }
 
 pub fn main() {
+    println!("cargo:rerun-if-change=config.toml");
     let mut config_path = File::open("config.toml").unwrap();
     let mut st = String::new();
     config_path.read_to_string(&mut st).unwrap();
-    let mut paths: Paths = toml::from_str(&st).unwrap();
-    paths.read_env();
-    paths = paths.canonicalize().unwrap();
-    for (k, v) in paths.as_env() {
+    let Config { mut dirs } = toml::from_str(&st).unwrap();
+    dirs.read_env();
+    dirs = dirs.canonicalize().unwrap();
+    for (k, v) in dirs.as_env() {
         println!("cargo:rustc-env={}={}", k, v.to_str().unwrap());
     }
 }
