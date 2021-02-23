@@ -40,6 +40,7 @@ pub struct PasswordHeader {
     pub algorithm: u8,
     pub salt_and_repetition: u8,
     pub salt_size: u32,
+    pub expiry_seconds: u64,
 }
 
 impl Default for PasswordHeader {
@@ -49,6 +50,7 @@ impl Default for PasswordHeader {
             algorithm: algorithms::DISABLED,
             salt_and_repetition: salting::DISABLED | salting::ROUNDS_MASK,
             salt_size: 0xFFFFFFFF,
+            expiry_seconds: 0,
         }
     }
 }

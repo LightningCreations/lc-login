@@ -3,6 +3,7 @@ use std::{
     io::{ErrorKind, Read, Write},
     mem::forget,
     path::{Path, PathBuf},
+    time::{Duration, SystemTime},
 };
 
 use std::os::unix::prelude::*;
@@ -19,13 +20,44 @@ impl UserHandle {
     pub fn from_name<S: AsRef<OsStr>>(name: S) -> std::io::Result<Self> {
         let mut path = PathBuf::from(*crate::dirs::USERS);
         path.push(name.as_ref());
-        path = std::fs::read_link(&path).unwrap_or(path);
+        match std::fs::read_link(&path) {
+            Ok(p) => path = p,
+            Err(e) if e.kind() == ErrorKind::InvalidInput => {}
+            Err(e) => return Err(e),
+        }
+
         Ok(Self { path })
     }
 
     pub fn from_uid(uid: u32) -> Self {
         let mut path = PathBuf::from(*crate::dirs::USERS);
         path.push(uid.to_string());
+        Self { path }
+    }
+
+    pub fn from_name_in<S: AsRef<OsStr>, P: AsRef<Path>>(
+        name: S,
+        chroot: P,
+    ) -> std::io::Result<Self> {
+        let mut path = PathBuf::from(chroot.as_ref());
+
+        path.push(crate::dirs::USERS.strip_prefix("/").unwrap());
+        path.push(name.as_ref());
+        match std::fs::read_link(&path) {
+            Ok(p) => path = p,
+            Err(e) if e.kind() == ErrorKind::InvalidInput => {}
+            Err(e) => return Err(e),
+        }
+
+        Ok(Self { path })
+    }
+
+    pub fn from_uid_in<P: AsRef<Path>>(uid: u32, chroot: P) -> Self {
+        let mut path = PathBuf::from(chroot.as_ref());
+
+        path.push(crate::dirs::USERS.strip_prefix("/").unwrap());
+        path.push(uid.to_string());
+
         Self { path }
     }
 
@@ -52,7 +84,7 @@ impl UserHandle {
         }
     }
 
-    pub fn set_name<S: AsRef<OsStr>>(&mut self, st: S) -> std::io::Result<()> {
+    pub fn set_name<S: AsRef<OsStr>>(&self, st: S) -> std::io::Result<()> {
         if let Some(s) = self.name()? {
             let mut path = self.path.clone();
             path.push(s);
@@ -115,7 +147,27 @@ impl UserHandle {
         std::os::unix::fs::symlink(p, path)
     }
 
-    pub fn authenticate(&self, passwd: &str) -> std::io::Result<()> {
+    pub fn has_password(&self) -> std::io::Result<bool> {
+        let mut path = self.path.clone();
+        path.push("password");
+        match std::fs::metadata(path) {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn remove_password(&self) -> std::io::Result<()> {
+        let mut path = self.path.clone();
+        path.push("password");
+        match std::fs::remove_file(path) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn authenticate(&self, passwd: &str) -> std::io::Result<bool> {
         let mut path = self.path.clone();
         path.push("password");
         let mut file = std::fs::File::open(path)?;
@@ -127,6 +179,7 @@ impl UserHandle {
                 "Invalid Authentication File",
             ));
         }
+
         if header.algorithm == crate::password::algorithms::DISABLED
             || header.salt_and_repetition & crate::password::salting::MASK
                 == crate::password::salting::DISABLED
@@ -136,6 +189,7 @@ impl UserHandle {
                 "Account has authentication disabled",
             ));
         }
+
         let mut salt = vec![0u8; header.salt_size as usize];
         file.read_exact(&mut salt)?;
         let mut bytes = Vec::new();
@@ -155,7 +209,11 @@ impl UserHandle {
             ));
         }
         if openssl::memcmp::eq(&bytes, &checked) {
-            Ok(())
+            Ok(header.expiry_seconds != 0
+                && matches!(
+                    (SystemTime::UNIX_EPOCH + Duration::from_secs(header.expiry_seconds)).elapsed(),
+                    Ok(_)
+                ))
         } else {
             Err(std::io::Error::new(
                 ErrorKind::Other,
@@ -164,7 +222,164 @@ impl UserHandle {
         }
     }
 
-    pub fn set_password(&mut self, passwd: &str) -> std::io::Result<()> {
+    pub fn expire_password(&self, at: Option<SystemTime>) -> std::io::Result<()> {
+        let at = at.unwrap_or_else(SystemTime::now);
+
+        let mut path = self.path.clone();
+        path.push("password-");
+        let mut passwd_path = self.path.clone();
+        passwd_path.push("password");
+        let mut backup = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        let defer = defer::defer(|| drop(std::fs::remove_file(&path)));
+        let mut file = std::fs::File::open(&passwd_path)?;
+        let mut header = PasswordHeader::default();
+        file.read_exact(bytemuck::bytes_of_mut(&mut header))?;
+        if header.version == crate::password::INVALID_VERSION {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "Invalid Authentication File",
+            ));
+        }
+        header.expiry_seconds = at
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?
+            .as_secs();
+        let mut salt = vec![0u8; header.salt_size as usize];
+        file.read_exact(&mut salt)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        backup.write_all(bytemuck::bytes_of(&header))?;
+        backup.write_all(&salt)?;
+        backup.write_all(&bytes)?;
+        std::fs::rename(&path, &passwd_path)?;
+        forget(defer);
+        Ok(())
+    }
+
+    pub fn unexpire_password(&self) -> std::io::Result<()> {
+        let mut path = self.path.clone();
+        path.push("password-");
+        let mut passwd_path = self.path.clone();
+        passwd_path.push("password");
+        let mut backup = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        let defer = defer::defer(|| drop(std::fs::remove_file(&path)));
+        let mut file = std::fs::File::open(&passwd_path)?;
+        let mut header = PasswordHeader::default();
+        file.read_exact(bytemuck::bytes_of_mut(&mut header))?;
+        if header.version == crate::password::INVALID_VERSION {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "Invalid Authentication File",
+            ));
+        }
+        header.expiry_seconds = 0;
+        let mut salt = vec![0u8; header.salt_size as usize];
+        file.read_exact(&mut salt)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        backup.write_all(bytemuck::bytes_of(&header))?;
+        backup.write_all(&salt)?;
+        backup.write_all(&bytes)?;
+        std::fs::rename(&path, &passwd_path)?;
+        forget(defer);
+        Ok(())
+    }
+
+    pub fn disable_password(&self) -> std::io::Result<()> {
+        let mut path = self.path.clone();
+        path.push("password-");
+        let mut passwd_path = self.path.clone();
+        passwd_path.push("password");
+        let mut backup = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        let defer = defer::defer(|| drop(std::fs::remove_file(&path)));
+        let mut file = std::fs::File::open(&passwd_path)?;
+        let mut header = PasswordHeader::default();
+        file.read_exact(bytemuck::bytes_of_mut(&mut header))?;
+        if header.version == crate::password::INVALID_VERSION {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "Invalid Authentication File",
+            ));
+        }
+        if header.algorithm == crate::password::algorithms::DISABLED
+            || header.salt_and_repetition & crate::password::salting::MASK
+                == crate::password::salting::DISABLED
+        {
+            return Ok(()); // Already Disabled, no need to disable multiple times
+        }
+
+        let disabled_header = PasswordHeader {
+            version: crate::password::CURRENT_VERSION,
+            salt_size: 0,
+            ..PasswordHeader::default()
+        };
+        let mut salt = vec![0u8; header.salt_size as usize];
+        file.read_exact(&mut salt)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        backup.write_all(bytemuck::bytes_of(&disabled_header))?;
+        backup.write_all(bytemuck::bytes_of(&header))?;
+        backup.write_all(&salt)?;
+        backup.write_all(&bytes)?;
+        std::fs::rename(&path, &passwd_path)?;
+        forget(defer);
+        Ok(())
+    }
+
+    pub fn enable_password(&self) -> std::io::Result<()> {
+        let mut path = self.path.clone();
+        path.push("password-");
+        let mut passwd_path = self.path.clone();
+        passwd_path.push("password");
+        let mut backup = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        let defer = defer::defer(|| drop(std::fs::remove_file(&path)));
+        let mut file = std::fs::File::open(&passwd_path)?;
+        let mut header = PasswordHeader::default();
+        file.read_exact(bytemuck::bytes_of_mut(&mut header))?;
+        if header.version == crate::password::INVALID_VERSION {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "Invalid Authentication File",
+            ));
+        }
+        if header.algorithm != crate::password::algorithms::DISABLED
+            && header.salt_and_repetition & crate::password::salting::MASK
+                != crate::password::salting::DISABLED
+        {
+            return Ok(()); // Already Enabled
+        }
+
+        file.read_exact(bytemuck::bytes_of_mut(&mut header))?;
+        let mut salt = vec![0u8; header.salt_size as usize];
+        file.read_exact(&mut salt)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+
+        backup.write_all(bytemuck::bytes_of(&header))?;
+        backup.write_all(&salt)?;
+        backup.write_all(&bytes)?;
+        std::fs::rename(&path, &passwd_path)?;
+        forget(defer);
+        Ok(())
+    }
+
+    pub fn set_password(&self, passwd: &str) -> std::io::Result<()> {
         let mut path = self.path.clone();
         path.push("password-"); // Use the password write file, so that authenticate never observes a broken write
         let mut file = std::fs::OpenOptions::new()
@@ -187,6 +402,7 @@ impl UserHandle {
                     salt_and_repetition: crate::password::DEFAULT_SALT
                         | crate::password::DEFAULT_ROUNDS,
                     salt_size: 31,
+                    expiry_seconds: 0,
                 }
             }
             Err(e) => return Err(e),
@@ -265,7 +481,7 @@ impl UserHandle {
             .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))
     }
 
-    pub fn set_primary_group(&mut self, group: u32) -> std::io::Result<()> {
+    pub fn set_primary_group(&self, group: u32) -> std::io::Result<()> {
         let mut path = self.path.clone();
         path.push("group");
         let mut group_path = PathBuf::from(&*crate::dirs::GROUPS);
@@ -273,7 +489,7 @@ impl UserHandle {
         std::os::unix::fs::symlink(group_path, path)
     }
 
-    pub fn add_secondary_group(&mut self, group: u32) -> std::io::Result<()> {
+    pub fn add_secondary_group(&self, group: u32) -> std::io::Result<()> {
         let mut groups = self.secondary_groups()?;
         groups.push(group);
         groups.sort_unstable();
@@ -290,7 +506,7 @@ impl UserHandle {
         )
     }
 
-    pub fn remove_secondary_group(&mut self, group: u32) -> std::io::Result<()> {
+    pub fn remove_secondary_group(&self, group: u32) -> std::io::Result<()> {
         let groups = self.secondary_groups()?;
         let mut path = self.path.clone();
         path.push("groups");

@@ -1,23 +1,48 @@
-use std::{collections::HashMap, ffi::CString, io::ErrorKind, path::Path, process::Command};
+use std::{
+    collections::HashMap,
+    ffi::CString,
+    io::{ErrorKind, Write},
+    path::Path,
+    process::Command,
+};
 
 use lc_login::users::UserHandle;
 use libc::getuid;
+use zeroize::Zeroizing;
 
 use std::os::unix::prelude::*;
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Void {}
 
 pub fn execute_login(
+    expired: bool,
     handle: &UserHandle,
     env: HashMap<String, String>,
     preserve_env: bool,
 ) -> std::io::Result<Void> {
     let uid = handle.uid()?;
+    if expired {
+        println!("Password Expired");
+        loop {
+            let passwd = Zeroizing::new(rpassword::prompt_password_stdout("New Password: ")?);
+            let passwd_confirm =
+                Zeroizing::new(rpassword::prompt_password_stdout("Confirm Password: ")?);
+            if passwd.len() == passwd_confirm.len() {
+                if openssl::memcmp::eq(passwd.as_bytes(), passwd_confirm.as_bytes()) {
+                    handle.set_password(&passwd)?;
+                    break;
+                }
+            }
+            eprintln!("Password Mismatch");
+        }
+    }
     let home = handle.home()?;
     let shell = handle.shell()?;
     let root = handle.root()?;
     let group = handle.primary_group()?;
     let groups = handle.secondary_groups()?;
+
     if let Some(root) = root {
         let rdir = CString::new(root.into_os_string().into_vec())
             .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
@@ -55,7 +80,7 @@ pub fn execute_login(
     Err(cmd.exec())
 }
 
-pub fn main() {
+pub fn main() -> ! {
     let mut args = std::env::args();
     let prg_name = args.next().unwrap(); // Yoink the program name.
 
@@ -101,12 +126,66 @@ pub fn main() {
                 }
             };
 
-            match execute_login(&handle, env, preserve) {
+            match execute_login(false, &handle, env, preserve) {
                 Ok(v) => match v {},
                 Err(e) => {
                     eprintln!("{}: {}", prg_name, e);
                     std::process::exit(1)
                 }
+            }
+        } else {
+            eprintln!("{}: -f requires a username argument", prg_name);
+            std::process::exit(1)
+        }
+    } else {
+        if uname.is_none() {
+            print!("Username: ");
+            let _ = std::io::stdout().flush();
+            uname = Some(String::new());
+            if let Err(e) = std::io::stdin().read_line(uname.as_mut().unwrap()) {
+                eprintln!("{}: {}", prg_name, e);
+                std::process::exit(1)
+            }
+        }
+        let uname = uname.unwrap();
+
+        let handle = match lc_login::users::UserHandle::from_name(uname) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("{}: {}", prg_name, e);
+                std::process::exit(1)
+            }
+        };
+
+        match handle.has_password() {
+            Ok(false) => {
+                let err = execute_login(false, &handle, env, preserve).unwrap_err();
+                eprintln!("{}: {}", prg_name, err);
+                std::process::exit(1)
+            }
+            Ok(true) => {}
+            Err(e) => {
+                eprintln!("{}: {}", prg_name, e);
+                std::process::exit(1)
+            }
+        }
+
+        let passwd = match rpassword::prompt_password_stdout("Password: ") {
+            Ok(s) => Zeroizing::new(s),
+            Err(e) => {
+                eprintln!("{}: {}", prg_name, e);
+                std::process::exit(1)
+            }
+        };
+
+        match handle
+            .authenticate(&*passwd)
+            .and_then(|expired| execute_login(expired, &handle, env, preserve))
+        {
+            Ok(v) => match v {},
+            Err(e) => {
+                eprintln!("{}: {}", prg_name, e);
+                std::process::exit(1)
             }
         }
     }

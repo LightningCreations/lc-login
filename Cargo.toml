@@ -22,6 +22,7 @@ zeroize = "1.2.0"
 defer = "0.1.0"
 itertools = "0.10.0"
 clap = "2.33.3"
+rpassword = "5.0.1"
 
 [build-dependencies]
 install-dirs={version="0.2.1",features=["serde"]}
@@ -35,6 +36,14 @@ path="src/su.rs"
 [[bin]]
 name = "login"
 path="src/login.rs"
+
+[[bin]]
+name = "passwd-convert"
+path="src/passwd_convert.rs"
+
+[[bin]]
+name = "passwd"
+path = "src/passwd.rs"
 
 [lib]
 name = "lc_login"
