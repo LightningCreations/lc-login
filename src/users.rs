@@ -6,6 +6,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use unshare::Command;
+
 use std::os::unix::prelude::*;
 
 use itertools::Itertools;
@@ -21,7 +23,10 @@ impl UserHandle {
         let mut path = PathBuf::from(*crate::dirs::USERS);
         path.push(name.as_ref());
         match std::fs::read_link(&path) {
-            Ok(p) => path = p,
+            Ok(p) => {
+                path.pop();
+                path.push(p);
+            }
             Err(e) if e.kind() == ErrorKind::InvalidInput => {}
             Err(e) => return Err(e),
         }
@@ -44,7 +49,15 @@ impl UserHandle {
         path.push(crate::dirs::USERS.strip_prefix("/").unwrap());
         path.push(name.as_ref());
         match std::fs::read_link(&path) {
-            Ok(p) => path = p,
+            Ok(p) => {
+                if p.is_absolute() {
+                    path = PathBuf::from(chroot.as_ref());
+                    path.push(p.strip_prefix("/").unwrap())
+                } else {
+                    path.pop();
+                    path.push(p);
+                }
+            }
             Err(e) if e.kind() == ErrorKind::InvalidInput => {}
             Err(e) => return Err(e),
         }
@@ -519,5 +532,17 @@ impl UserHandle {
                 .join(",")
                 .as_bytes(),
         )
+    }
+
+    pub fn login<'a>(&self, cmd: &'a mut Command) -> std::io::Result<&'a mut Command> {
+        cmd.groups(self.secondary_groups()?)
+            .uid(self.uid()?)
+            .gid(self.primary_group()?);
+
+        if let Some(x) = self.root()? {
+            cmd.chroot_dir(x);
+        }
+
+        Ok(cmd)
     }
 }

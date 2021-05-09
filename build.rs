@@ -104,6 +104,7 @@ pub fn main() {
     dirs.read_env();
     dirs = dirs.canonicalize().unwrap();
     for (k, v) in dirs.as_env() {
+        println!("cargo:rerun-if-env-changed={}", k);
         println!("cargo:rustc-env={}={}", k, v.to_str().unwrap());
     }
 }

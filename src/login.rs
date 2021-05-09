@@ -104,8 +104,8 @@ pub fn main() -> ! {
                 std::process::exit(1);
             }
             "-f" => no_auth = true,
-            x if x.find("=").is_some() => {
-                let mut k = x.split("=");
+            x if x.contains('=') => {
+                let mut k = x.split('=');
                 env.insert(k.next().unwrap().to_string(), k.next().unwrap().to_string());
             }
             x => uname = Some(x.to_string()),
