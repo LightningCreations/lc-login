@@ -1,0 +1,7 @@
+# Root Options
+
+srcdir = @srcdir@
+outdir = @outdir@
+
+
+## Install directories
