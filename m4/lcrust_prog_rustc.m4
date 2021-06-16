@@ -29,21 +29,59 @@ AC_DEFUN([LCRUST_PROG_RUSTC],[
                 RUSTFLAGS="$RUSTFLAGS --target $host"
                 echo '' > test.rs
                 $RUSTC $RUSTFLAGS --crate-type rlib --crate-name test test.rs 2>> config.log > /dev/null
-                rm -f test.rs libtest.rs
+                
                 if test $? -eq 0
                 then
                     AC_MSG_RESULT([--target $host])
                 else
+                    rm -f test.rs libtest.rlib
                     RUSTFLAGS="$SAVE_RUSTFLAGS --target $host_alias"
                     echo '' > test.rs
                     $RUSTC $RUSTFLAGS --crate-type rlib --crate-name test test.rs  2>> config.log > /dev/null
-                    rm -f test.rs libtest.rs
                     if test $? -eq 0
                     then
-                       AC_MSG_RESULT([--target $host_alias])
+                        rm -f test.rs libtest.rlib
+                        AC_MSG_RESULT([--target $host_alias])
                     else
-                        AC_MSG_RESULT([failed])
-                        AC_MSG_ERROR([$RUSTC seems unable to target $host])
+                        rm -f test.rs libtest.rlib
+                        case "$host" in 
+                            x86_64-pc-*-* )
+                                IFS="-" read arch vendor kernel env  <<< "$host"
+                                host_target="$arch-unknown-$kernel-$env"
+                                RUSTFLAGS="$SAVE_RUSTFLAGS --target $host_target"
+                                echo '' > test.rs
+                                $RUSTC $RUSTFLAGS --crate-type rlib --crate-name test test.rs  2>> config.log > /dev/null
+                                if test $? -eq 0
+                                then
+                                    rm -f test.rs libtest.rlib
+                                    AC_MSG_RESULT([--target $host_target])
+                                else
+                                    AC_MSG_RESULT([failed])
+                                    AC_MSG_ERROR([Cannot determine how to cross compile to $host with $RUSTC])
+                                fi
+                            ;;
+
+                            i?86-pc-*-* )
+                                IFS="-" read arch vendor kernel env  <<< "$host"
+                                host_target="$arch-unknown-$kernel-$env"
+                                RUSTFLAGS="$SAVE_RUSTFLAGS --target $host_target"
+                                echo '' > test.rs
+                                $RUSTC $RUSTFLAGS --crate-type rlib --crate-name test test.rs  2>> config.log > /dev/null
+                                if test $? -eq 0
+                                then
+                                    rm -f test.rs libtest.rlib
+                                    AC_MSG_RESULT([--target $host_target])
+                                else
+                                    AC_MSG_RESULT([failed])
+                                    AC_MSG_ERROR([Cannot determine how to cross compile to $host with $RUSTC])
+                                fi
+                            ;;
+
+                            *)
+                                AC_MSG_RESULT([failed])
+                                AC_MSG_ERROR([Cannot determine how to cross compile to $host with $RUSTC])
+                                ;;
+                        esac
                     fi
                 fi
                 ;;
@@ -68,7 +106,7 @@ AC_DEFUN([LCRUST_PROG_RUSTC],[
             AC_MSG_ERROR([Cannot compile a simple program with $RUSTC])
         fi
     fi
-    
+
     rm -rf test.rs test${EXEEXT}
 
     AC_MSG_RESULT([yes])

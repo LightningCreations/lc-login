@@ -2870,24 +2870,66 @@ $as_echo_n "checking how to cross compile with $RUSTC... " >&6; }
                 RUSTFLAGS="$RUSTFLAGS --target $host"
                 echo '' > test.rs
                 $RUSTC $RUSTFLAGS --crate-type rlib --crate-name test test.rs 2>> config.log > /dev/null
-                rm -f test.rs libtest.rs
+
                 if test $? -eq 0
                 then
                     { $as_echo "$as_me:${as_lineno-$LINENO}: result: --target $host" >&5
 $as_echo "--target $host" >&6; }
                 else
+                    rm -f test.rs libtest.rlib
                     RUSTFLAGS="$SAVE_RUSTFLAGS --target $host_alias"
                     echo '' > test.rs
                     $RUSTC $RUSTFLAGS --crate-type rlib --crate-name test test.rs  2>> config.log > /dev/null
-                    rm -f test.rs libtest.rs
                     if test $? -eq 0
                     then
-                       { $as_echo "$as_me:${as_lineno-$LINENO}: result: --target $host_alias" >&5
+                        rm -f test.rs libtest.rlib
+                        { $as_echo "$as_me:${as_lineno-$LINENO}: result: --target $host_alias" >&5
 $as_echo "--target $host_alias" >&6; }
                     else
-                        { $as_echo "$as_me:${as_lineno-$LINENO}: result: failed" >&5
+                        rm -f test.rs libtest.rlib
+                        case "$host" in
+                            x86_64-pc-*-* )
+                                IFS="-" read arch vendor kernel env  <<< "$host"
+                                host_target="$arch-unknown-$kernel-$env"
+                                RUSTFLAGS="$SAVE_RUSTFLAGS --target $host_target"
+                                echo '' > test.rs
+                                $RUSTC $RUSTFLAGS --crate-type rlib --crate-name test test.rs  2>> config.log > /dev/null
+                                if test $? -eq 0
+                                then
+                                    rm -f test.rs libtest.rlib
+                                    { $as_echo "$as_me:${as_lineno-$LINENO}: result: --target $host_target" >&5
+$as_echo "--target $host_target" >&6; }
+                                else
+                                    { $as_echo "$as_me:${as_lineno-$LINENO}: result: failed" >&5
 $as_echo "failed" >&6; }
-                        as_fn_error $? "$RUSTC seems unable to target $host" "$LINENO" 5
+                                    as_fn_error $? "Cannot determine how to cross compile to $host with $RUSTC" "$LINENO" 5
+                                fi
+                            ;;
+
+                            i?86-pc-*-* )
+                                IFS="-" read arch vendor kernel env  <<< "$host"
+                                host_target="$arch-unknown-$kernel-$env"
+                                RUSTFLAGS="$SAVE_RUSTFLAGS --target $host_target"
+                                echo '' > test.rs
+                                $RUSTC $RUSTFLAGS --crate-type rlib --crate-name test test.rs  2>> config.log > /dev/null
+                                if test $? -eq 0
+                                then
+                                    rm -f test.rs libtest.rlib
+                                    { $as_echo "$as_me:${as_lineno-$LINENO}: result: --target $host_target" >&5
+$as_echo "--target $host_target" >&6; }
+                                else
+                                    { $as_echo "$as_me:${as_lineno-$LINENO}: result: failed" >&5
+$as_echo "failed" >&6; }
+                                    as_fn_error $? "Cannot determine how to cross compile to $host with $RUSTC" "$LINENO" 5
+                                fi
+                            ;;
+
+                            *)
+                                { $as_echo "$as_me:${as_lineno-$LINENO}: result: failed" >&5
+$as_echo "failed" >&6; }
+                                as_fn_error $? "Cannot determine how to cross compile to $host with $RUSTC" "$LINENO" 5
+                                ;;
+                        esac
                     fi
                 fi
                 ;;
@@ -2915,6 +2957,8 @@ $as_echo "no" >&6; }
             as_fn_error $? "Cannot compile a simple program with $RUSTC" "$LINENO" 5
         fi
     fi
+
+    rm -rf test.rs test${EXEEXT}
 
     { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
