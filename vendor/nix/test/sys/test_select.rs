@@ -2,11 +2,10 @@ use nix::sys::select::*;
 use nix::unistd::{pipe, write};
 use nix::sys::signal::SigSet;
 use nix::sys::time::{TimeSpec, TimeValLike};
-use std::os::unix::io::RawFd;
 
 #[test]
 pub fn test_pselect() {
-    let _mtx = ::SIGNAL_MTX
+    let _mtx = crate::SIGNAL_MTX
         .lock()
         .expect("Mutex got poisoned by another test");
 

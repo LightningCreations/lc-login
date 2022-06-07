@@ -2,27 +2,522 @@
 
 All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
+This project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.11.1] 2019-06-06
-
+## [0.20.2] - 28 September 2021
 ### Added
+### Changed
+### Fixed
+
+- Fixed buffer overflow in `unistd::getgrouplist`.
+  (#[1545](https://github.com/nix-rust/nix/pull/1545))
+
+## [0.20.1] - 13 August 2021
+### Added
+### Changed
+### Fixed
+
+- Locked bitflags to < 1.3.0 to fix the build with rust < 1.46.0.
+
+### Removed
+
+- Removed a couple of termios constants on redox that were never actually
+  supported.
+  (#[1483](https://github.com/nix-rust/nix/pull/1483))
+
+## [0.20.0] - 20 February 2021
+### Added
+
+- Added a `passwd` field to `Group` (#[1338](https://github.com/nix-rust/nix/pull/1338))
+- Added `mremap` (#[1306](https://github.com/nix-rust/nix/pull/1306))
+- Added `personality` (#[1331](https://github.com/nix-rust/nix/pull/1331))
+- Added limited Fuchsia support (#[1285](https://github.com/nix-rust/nix/pull/1285))
+- Added `getpeereid` (#[1342](https://github.com/nix-rust/nix/pull/1342))
+- Implemented `IntoIterator` for `Dir`
+  (#[1333](https://github.com/nix-rust/nix/pull/1333)).
+
+### Changed
+
+- Minimum supported Rust version is now 1.40.0.
+  ([#1356](https://github.com/nix-rust/nix/pull/1356))
+- i686-apple-darwin has been demoted to Tier 2 support, because it's deprecated
+  by Xcode.
+  (#[1350](https://github.com/nix-rust/nix/pull/1350))
+- Fixed calling `recvfrom` on an `AddrFamily::Packet` socket
+  (#[1344](https://github.com/nix-rust/nix/pull/1344))
+
+### Fixed
+- `TimerFd` now closes the underlying fd on drop.
+  ([#1381](https://github.com/nix-rust/nix/pull/1381))
+- Define `*_MAGIC` filesystem constants on Linux s390x
+  (#[1372](https://github.com/nix-rust/nix/pull/1372))
+- mqueue, sysinfo, timespec, statfs, test_ptrace_syscall() on x32
+  (#[1366](https://github.com/nix-rust/nix/pull/1366))
+
+### Removed
+
+- `Dir`, `SignalFd`, and `PtyMaster` are no longer `Clone`.
+  (#[1382](https://github.com/nix-rust/nix/pull/1382))
+- Removed `SockLevel`, which hasn't been used for a few years
+  (#[1362](https://github.com/nix-rust/nix/pull/1362))
+- Removed both `Copy` and `Clone` from `TimerFd`.
+  ([#1381](https://github.com/nix-rust/nix/pull/1381))
+
+## [0.19.1] - 28 November 2020
+### Fixed
+- Fixed bugs in `recvmmsg`.
+  (#[1341](https://github.com/nix-rust/nix/pull/1341))
+
+## [0.19.0] - 6 October 2020
+### Added
+- Added Netlink protocol families to the `SockProtocol` enum
+  (#[1289](https://github.com/nix-rust/nix/pull/1289))
+- Added `clock_gettime`, `clock_settime`, `clock_getres`,
+  `clock_getcpuclockid` functions and `ClockId` struct.
+  (#[1281](https://github.com/nix-rust/nix/pull/1281))
+- Added wrapper functions for `PTRACE_SYSEMU` and `PTRACE_SYSEMU_SINGLESTEP`.
+  (#[1300](https://github.com/nix-rust/nix/pull/1300))
+- Add support for Vsock on Android rather than just Linux.
+  (#[1301](https://github.com/nix-rust/nix/pull/1301))
+- Added `TCP_KEEPCNT` and `TCP_KEEPINTVL` TCP keepalive options.
+  (#[1283](https://github.com/nix-rust/nix/pull/1283))
+### Changed
+- Expose `SeekData` and `SeekHole` on all Linux targets
+  (#[1284](https://github.com/nix-rust/nix/pull/1284))
+- Changed unistd::{execv,execve,execvp,execvpe,fexecve,execveat} to take both `&[&CStr]` and `&[CString]` as its list argument(s).
+  (#[1278](https://github.com/nix-rust/nix/pull/1278))
+- Made `unistd::fork` an unsafe funtion, bringing it in line with [libstd's decision](https://github.com/rust-lang/rust/pull/58059).
+  (#[1293](https://github.com/nix-rust/nix/pull/1293))
+### Fixed
+### Removed
+
+## [0.18.0] - 26 July 2020
+### Added
+- Added `fchown(2)` wrapper.
+  (#[1257](https://github.com/nix-rust/nix/pull/1257))
+- Added support on linux systems for `MAP_HUGE_`_`SIZE`_ family of flags.
+  (#[1211](https://github.com/nix-rust/nix/pull/1211))
+- Added support for `F_OFD_*` `fcntl` commands on Linux and Android.
+  (#[1195](https://github.com/nix-rust/nix/pull/1195))
+- Added `env::clearenv()`: calls `libc::clearenv` on platforms
+  where it's available, and clears the environment of all variables
+  via `std::env::vars` and `std::env::remove_var` on others.
+  (#[1185](https://github.com/nix-rust/nix/pull/1185))
+- `FsType` inner value made public.
+  (#[1187](https://github.com/nix-rust/nix/pull/1187))
+- Added `unistd::setfsuid` and `unistd::setfsgid` to set the user or group
+  identity for filesystem checks per-thread.
+  (#[1163](https://github.com/nix-rust/nix/pull/1163))
+- Derived `Ord`, `PartialOrd` for `unistd::Pid` (#[1189](https://github.com/nix-rust/nix/pull/1189))
+- Added `select::FdSet::fds` method to iterate over file descriptors in a set.
+  ([#1207](https://github.com/nix-rust/nix/pull/1207))
+- Added support for UDP generic segmentation offload (GSO) and generic
+  receive offload (GRO) ([#1209](https://github.com/nix-rust/nix/pull/1209))
+- Added support for `sendmmsg` and `recvmmsg` calls
+  (#[1208](https://github.com/nix-rust/nix/pull/1208))
+- Added support for `SCM_CREDS` messages (`UnixCredentials`) on FreeBSD/DragonFly
+  (#[1216](https://github.com/nix-rust/nix/pull/1216))
+- Added `BindToDevice` socket option (sockopt) on Linux
+  (#[1233](https://github.com/nix-rust/nix/pull/1233))
+- Added `EventFilter` bitflags for `EV_DISPATCH` and `EV_RECEIPT` on OpenBSD.
+  (#[1252](https://github.com/nix-rust/nix/pull/1252))
+- Added support for `Ipv4PacketInfo` and `Ipv6PacketInfo` to `ControlMessage`.
+  (#[1222](https://github.com/nix-rust/nix/pull/1222))
+- `CpuSet` and `UnixCredentials` now implement `Default`.
+  (#[1244](https://github.com/nix-rust/nix/pull/1244))
+- Added `unistd::ttyname`
+  (#[1259](https://github.com/nix-rust/nix/pull/1259))
+- Added support for `Ipv4PacketInfo` and `Ipv6PacketInfo` to `ControlMessage` for iOS and Android.
+  (#[1265](https://github.com/nix-rust/nix/pull/1265))
+- Added support for `TimerFd`.
+  (#[1261](https://github.com/nix-rust/nix/pull/1261))
+
+### Changed
+- Changed `fallocate` return type from `c_int` to `()` (#[1201](https://github.com/nix-rust/nix/pull/1201))
+- Enabled `sys::ptrace::setregs` and `sys::ptrace::getregs` on x86_64-unknown-linux-musl target
+  (#[1198](https://github.com/nix-rust/nix/pull/1198))
+- On Linux, `ptrace::write` is now an `unsafe` function. Caveat programmer.
+  (#[1245](https://github.com/nix-rust/nix/pull/1245))
+- `execv`, `execve`, `execvp` and `execveat` in `::nix::unistd` and `reboot` in
+  `::nix::sys::reboot` now return `Result<Infallible>` instead of `Result<Void>` (#[1239](https://github.com/nix-rust/nix/pull/1239))
+- `sys::socket::sockaddr_storage_to_addr` is no longer `unsafe`.  So is
+  `offset_of!`.
+- `sys::socket::sockaddr_storage_to_addr`, `offset_of!`, and `Errno::clear` are
+  no longer `unsafe`.
+- `SockAddr::as_ffi_pair`,`sys::socket::sockaddr_storage_to_addr`, `offset_of!`,
+  and `Errno::clear` are no longer `unsafe`.
+  (#[1244](https://github.com/nix-rust/nix/pull/1244))
+- Several `Inotify` methods now take `self` by value instead of by reference
+  (#[1244](https://github.com/nix-rust/nix/pull/1244))
+- `nix::poll::ppoll`: `timeout` parameter is now optional, None is equivalent for infinite timeout.
+
+### Fixed
+
+- Fixed `getsockopt`.  The old code produced UB which triggers a panic with
+  Rust 1.44.0.
+  (#[1214](https://github.com/nix-rust/nix/pull/1214))
+
+- Fixed a bug in nix::unistd that would result in an infinite loop
+  when a group or user lookup required a buffer larger than
+  16KB. (#[1198](https://github.com/nix-rust/nix/pull/1198))
+- Fixed unaligned casting of `cmsg_data` to `af_alg_iv` (#[1206](https://github.com/nix-rust/nix/pull/1206))
+- Fixed `readlink`/`readlinkat` when reading symlinks longer than `PATH_MAX` (#[1231](https://github.com/nix-rust/nix/pull/1231))
+- `PollFd`, `EpollEvent`, `IpMembershipRequest`, `Ipv6MembershipRequest`,
+  `TimeVal`, and `IoVec` are now `repr(transparent)`.  This is required for
+  correctness's sake across all architectures and compilers, though now bugs
+  have been reported so far.
+  (#[1243](https://github.com/nix-rust/nix/pull/1243))
+- Fixed unaligned pointer read in `Inotify::read_events`.
+  (#[1244](https://github.com/nix-rust/nix/pull/1244))
+
+### Removed
+
+- Removed `sys::socket::addr::from_libc_sockaddr` from the public API.
+  (#[1215](https://github.com/nix-rust/nix/pull/1215))
+- Removed `sys::termios::{get_libc_termios, get_libc_termios_mut, update_wrapper`
+  from the public API. These were previously hidden in the docs but still usable
+  by downstream.
+  (#[1235](https://github.com/nix-rust/nix/pull/1235))
+
+- Nix no longer implements `NixPath` for `Option<P> where P: NixPath`.  Most
+  Nix functions that accept `NixPath` arguments can't do anything useful with
+  `None`.  The exceptions (`mount` and `quotactl_sync`) already take explicitly
+  optional arguments.
+  (#[1242](https://github.com/nix-rust/nix/pull/1242))
+
+- Removed `unistd::daemon` and `unistd::pipe2` on OSX and ios
+  (#[1255](https://github.com/nix-rust/nix/pull/1255))
+
+- Removed `sys::event::FilterFlag::NOTE_EXIT_REPARENTED` and
+  `sys::event::FilterFlag::NOTE_REAP` on OSX and ios.
+  (#[1255](https://github.com/nix-rust/nix/pull/1255))
+
+- Removed `sys::ptrace::ptrace` on Android and Linux.
+  (#[1255](https://github.com/nix-rust/nix/pull/1255))
+
+- Dropped support for powerpc64-unknown-linux-gnu
+  (#[1266](https://github.com/nix-rust/nix/pull/1268))
+
+## [0.17.0] - 3 February 2020
+### Added
+- Add `CLK_TCK` to `SysconfVar`
+  (#[1177](https://github.com/nix-rust/nix/pull/1177))
+### Changed
+### Fixed
+### Removed
+- Removed deprecated Error::description from error types
+  (#[1175](https://github.com/nix-rust/nix/pull/1175))
+
+## [0.16.1] - 23 December 2019
+### Added
+### Changed
+### Fixed
+
+- Fixed the build for OpenBSD
+  (#[1168](https://github.com/nix-rust/nix/pull/1168))
+
+### Removed
+
+## [0.16.0] - 1 December 2019
+### Added
+- Added `ptrace::seize()`: similar to `attach()` on Linux
+  but with better-defined semantics.
+  (#[1154](https://github.com/nix-rust/nix/pull/1154))
+
+- Added `Signal::as_str()`: returns signal name as `&'static str`
+  (#[1138](https://github.com/nix-rust/nix/pull/1138))
+
+- Added `posix_fallocate`.
+  ([#1105](https://github.com/nix-rust/nix/pull/1105))
+
+- Implemented `Default` for `FdSet`
+  ([#1107](https://github.com/nix-rust/nix/pull/1107))
+
+- Added `NixPath::is_empty`.
+  ([#1107](https://github.com/nix-rust/nix/pull/1107))
+
+- Added `mkfifoat`
+  ([#1133](https://github.com/nix-rust/nix/pull/1133))
+
+- Added `User::from_uid`, `User::from_name`, `User::from_gid` and
+  `Group::from_name`,
+  ([#1139](https://github.com/nix-rust/nix/pull/1139))
+
+- Added `linkat`
+  ([#1101](https://github.com/nix-rust/nix/pull/1101))
+
+- Added `sched_getaffinity`.
+  ([#1148](https://github.com/nix-rust/nix/pull/1148))
+
+- Added optional `Signal` argument to `ptrace::{detach, syscall}` for signal
+  injection. ([#1083](https://github.com/nix-rust/nix/pull/1083))
+
+### Changed
+- `sys::termios::BaudRate` now implements `TryFrom<speed_t>` instead of
+  `From<speed_t>`.  The old `From` implementation would panic on failure.
+  ([#1159](https://github.com/nix-rust/nix/pull/1159))
+
+- `sys::socket::ControlMessage::ScmCredentials` and
+  `sys::socket::ControlMessageOwned::ScmCredentials` now wrap `UnixCredentials`
+  rather than `libc::ucred`.
+  ([#1160](https://github.com/nix-rust/nix/pull/1160))
+
+- `sys::socket::recvmsg` now takes a plain `Vec` instead of a `CmsgBuffer`
+  implementor.  If you were already using `cmsg_space!`, then you needn't worry.
+  ([#1156](https://github.com/nix-rust/nix/pull/1156))
+
+- `sys::socket::recvfrom` now returns
+  `Result<(usize, Option<SockAddr>)>` instead of `Result<(usize, SockAddr)>`.
+  ([#1145](https://github.com/nix-rust/nix/pull/1145))
+
+- `Signal::from_c_int` has been replaced by `Signal::try_from`
+  ([#1113](https://github.com/nix-rust/nix/pull/1113))
+
+- Changed `readlink` and `readlinkat` to return `OsString`
+  ([#1109](https://github.com/nix-rust/nix/pull/1109))
+
+  ```rust
+  # use nix::fcntl::{readlink, readlinkat};
+  // the buffer argument of `readlink` and `readlinkat` has been removed,
+  // and the return value is now an owned type (`OsString`).
+  // Existing code can be updated by removing the buffer argument
+  // and removing any clone or similar operation on the output
+
+  // old code `readlink(&path, &mut buf)` can be replaced with the following
+  let _: OsString = readlink(&path);
+
+  // old code `readlinkat(dirfd, &path, &mut buf)` can be replaced with the following
+  let _: OsString = readlinkat(dirfd, &path);
+  ```
+
+- Minimum supported Rust version is now 1.36.0.
+  ([#1108](https://github.com/nix-rust/nix/pull/1108))
+
+- `Ipv4Addr::octets`, `Ipv4Addr::to_std`, `Error::as_errno`,
+  `ForkResult::is_child`, `ForkResult::is_parent`, `Gid::as_raw`,
+  `Uid::is_root`, `Uid::as_raw`, `Pid::as_raw`, and `PollFd::revents` now take
+  `self` by value.
+  ([#1107](https://github.com/nix-rust/nix/pull/1107))
+
+- Type `&CString` for parameters of `exec(v|ve|vp|vpe|veat)` are changed to `&CStr`.
+  ([#1121](https://github.com/nix-rust/nix/pull/1121))
+
+### Fixed
+- Fix length of abstract socket addresses
+  ([#1120](https://github.com/nix-rust/nix/pull/1120))
+
+- Fix initialization of msghdr in recvmsg/sendmsg when built with musl
+  ([#1136](https://github.com/nix-rust/nix/pull/1136))
+
+### Removed
+- Remove the deprecated `CmsgSpace`.
+  ([#1156](https://github.com/nix-rust/nix/pull/1156))
+
+## [0.15.0] - 10 August 2019
+### Added
+- Added `MSG_WAITALL` to `MsgFlags` in `sys::socket`.
+  ([#1079](https://github.com/nix-rust/nix/pull/1079))
+- Implemented `Clone`, `Copy`, `Debug`, `Eq`, `Hash`, and `PartialEq` for most
+  types that support them. ([#1035](https://github.com/nix-rust/nix/pull/1035))
+- Added `copy_file_range` wrapper
+  ([#1069](https://github.com/nix-rust/nix/pull/1069))
+- Add `mkdirat`.
+  ([#1084](https://github.com/nix-rust/nix/pull/1084))
+- Add `posix_fadvise`.
+  ([#1089](https://github.com/nix-rust/nix/pull/1089))
+- Added `AF_VSOCK` to `AddressFamily`.
+  ([#1091](https://github.com/nix-rust/nix/pull/1091))
+- Add `unlinkat`
+  ([#1058](https://github.com/nix-rust/nix/pull/1058))
+- Add `renameat`.
+  ([#1097](https://github.com/nix-rust/nix/pull/1097))
+
+### Changed
+- Support for `ifaddrs` now present when building for Android.
+  ([#1077](https://github.com/nix-rust/nix/pull/1077))
+- Minimum supported Rust version is now 1.31.0
+  ([#1035](https://github.com/nix-rust/nix/pull/1035))
+  ([#1095](https://github.com/nix-rust/nix/pull/1095))
+- Now functions `statfs()` and `fstatfs()` return result with `Statfs` wrapper
+  ([#928](https://github.com/nix-rust/nix/pull/928))
+
+### Fixed
+- Enabled `sched_yield` for all nix hosts.
+  ([#1090](https://github.com/nix-rust/nix/pull/1090))
+
+### Removed
+
+## [0.14.1] - 2019-06-06
+### Added
+- Macros exported by `nix` may now be imported via `use` on the Rust 2018
+  edition without importing helper macros on Linux targets.
+  ([#1066](https://github.com/nix-rust/nix/pull/1066))
+
+  For example, in Rust 2018, the `ioctl_read_bad!` macro can now be imported
+  without importing the `convert_ioctl_res!` macro.
+
+  ```rust
+  use nix::ioctl_read_bad;
+
+  ioctl_read_bad!(tcgets, libc::TCGETS, libc::termios);
+  ```
+
+### Changed
 - Changed some public types from reexports of libc types like `uint32_t` to the
-  native equivalents like u32.
-  ([#1072](https://github.com/nix-rust/nix/pull/1072))
+  native equivalents like `u32.`
+  ([#1072](https://github.com/nix-rust/nix/pull/1072/commits))
 
 ### Fixed
 - Fix the build on Android and Linux/mips with recent versions of libc.
-  ([#1072](https://github.com/nix-rust/nix/pull/1072))
-- Fixed build on Linux/arm and Linux/s390x with the latest Rust libc
-  ([52102cb](https://github.com/nix-rust/nix/commit/52102cb76398c4dfb9ea141b98c5b01a2e050973))
+  ([#1072](https://github.com/nix-rust/nix/pull/1072/commits))
 
 ### Removed
-- `fexecve` never worked on NetBSD or on OpenBSD as it is not implemented on
-  either OS. It has been removed.
-  ([#1000](https://github.com/nix-rust/nix/pull/1000))
+
+## [0.14.0] - 2019-05-21
+### Added
+- Add IP_RECVIF & IP_RECVDSTADDR. Enable IP_PKTINFO and IP6_PKTINFO on netbsd/openbsd.
+  ([#1002](https://github.com/nix-rust/nix/pull/1002))
+- Added `inotify_init1`, `inotify_add_watch` and `inotify_rm_watch` wrappers for
+  Android and Linux. ([#1016](https://github.com/nix-rust/nix/pull/1016))
+- Add `ALG_SET_IV`, `ALG_SET_OP` and `ALG_SET_AEAD_ASSOCLEN` control messages and `AF_ALG`
+  socket types on Linux and Android ([#1031](https://github.com/nix-rust/nix/pull/1031))
+- Add killpg
+  ([#1034](https://github.com/nix-rust/nix/pull/1034))
+- Added ENOTSUP errno support for Linux and Android.
+  ([#969](https://github.com/nix-rust/nix/pull/969))
+- Add several errno constants from OpenBSD 6.2
+  ([#1036](https://github.com/nix-rust/nix/pull/1036))
+- Added `from_std` and `to_std` methods for `sys::socket::IpAddr`
+  ([#1043](https://github.com/nix-rust/nix/pull/1043))
+- Added `nix::unistd:seteuid` and `nix::unistd::setegid` for those platforms that do
+  not support `setresuid` nor `setresgid` respectively.
+  ([#1044](https://github.com/nix-rust/nix/pull/1044))
+- Added a `access` wrapper
+  ([#1045](https://github.com/nix-rust/nix/pull/1045))
+- Add `forkpty`
+  ([#1042](https://github.com/nix-rust/nix/pull/1042))
+- Add `sched_yield`
+  ([#1050](https://github.com/nix-rust/nix/pull/1050))
+
+### Changed
+- `PollFd` event flags renamed to `PollFlags` ([#1024](https://github.com/nix-rust/nix/pull/1024/))
+- `recvmsg` now returns an Iterator over `ControlMessageOwned` objects rather
+  than `ControlMessage` objects.  This is sadly not backwards-compatible.  Fix
+  code like this:
+  ```rust
+  if let ControlMessage::ScmRights(&fds) = cmsg {
+  ```
+
+  By replacing it with code like this:
+  ```rust
+  if let ControlMessageOwned::ScmRights(fds) = cmsg {
+  ```
+  ([#1020](https://github.com/nix-rust/nix/pull/1020))
+- Replaced `CmsgSpace` with the `cmsg_space` macro.
+  ([#1020](https://github.com/nix-rust/nix/pull/1020))
+
+### Fixed
+- Fixed multiple bugs when using `sendmsg` and `recvmsg` with ancillary control messages
+  ([#1020](https://github.com/nix-rust/nix/pull/1020))
+- Macros exported by `nix` may now be imported via `use` on the Rust 2018
+  edition without importing helper macros for BSD targets.
+  ([#1041](https://github.com/nix-rust/nix/pull/1041))
+
+  For example, in Rust 2018, the `ioctl_read_bad!` macro can now be imported
+  without importing the `convert_ioctl_res!` macro.
+
+  ```rust
+  use nix::ioctl_read_bad;
+
+  ioctl_read_bad!(tcgets, libc::TCGETS, libc::termios);
+  ```
+
+### Removed
 - `Daemon`, `NOTE_REAP`, and `NOTE_EXIT_REPARENTED` are now deprecated on OSX
   and iOS.
   ([#1033](https://github.com/nix-rust/nix/pull/1033))
+- `PTRACE_GETREGS`, `PTRACE_SETREGS`, `PTRACE_GETFPREGS`, and
+  `PTRACE_SETFPREGS` have been removed from some platforms where they never
+  should've been defined in the first place.
+  ([#1055](https://github.com/nix-rust/nix/pull/1055))
+
+## [0.13.0] - 2019-01-15
+### Added
+- Added PKTINFO(V4) & V6PKTINFO cmsg support - Android/FreeBSD/iOS/Linux/MacOS.
+  ([#990](https://github.com/nix-rust/nix/pull/990))
+- Added support of CString type in `setsockopt`.
+  ([#972](https://github.com/nix-rust/nix/pull/972))
+- Added option `TCP_CONGESTION` in `setsockopt`.
+  ([#972](https://github.com/nix-rust/nix/pull/972))
+- Added `symlinkat` wrapper.
+  ([#997](https://github.com/nix-rust/nix/pull/997))
+- Added `ptrace::{getregs, setregs}`.
+  ([#1010](https://github.com/nix-rust/nix/pull/1010))
+- Added `nix::sys::signal::signal`.
+  ([#817](https://github.com/nix-rust/nix/pull/817))
+- Added an `mprotect` wrapper.
+  ([#991](https://github.com/nix-rust/nix/pull/991))
+
+### Changed
+### Fixed
+- `lutimes` never worked on OpenBSD as it is not implemented on OpenBSD. It has
+  been removed. ([#1000](https://github.com/nix-rust/nix/pull/1000))
+- `fexecve` never worked on NetBSD or on OpenBSD as it is not implemented on
+  either OS. It has been removed. ([#1000](https://github.com/nix-rust/nix/pull/1000))
+
+### Removed
+
+## [0.12.0] 2018-11-28
+
+### Added
+- Added `FromStr` and `Display` impls for `nix::sys::Signal`
+  ([#884](https://github.com/nix-rust/nix/pull/884))
+- Added a `sync` wrapper.
+  ([#961](https://github.com/nix-rust/nix/pull/961))
+- Added a `sysinfo` wrapper.
+  ([#922](https://github.com/nix-rust/nix/pull/922))
+- Support the `SO_PEERCRED` socket option and the `UnixCredentials` type on all Linux and Android targets.
+  ([#921](https://github.com/nix-rust/nix/pull/921))
+- Added support for `SCM_CREDENTIALS`, allowing to send process credentials over Unix sockets.
+  ([#923](https://github.com/nix-rust/nix/pull/923))
+- Added a `dir` module for reading directories (wraps `fdopendir`, `readdir`, and `rewinddir`).
+  ([#916](https://github.com/nix-rust/nix/pull/916))
+- Added `kmod` module that allows loading and unloading kernel modules on Linux.
+  ([#930](https://github.com/nix-rust/nix/pull/930))
+- Added `futimens` and `utimesat` wrappers ([#944](https://github.com/nix-rust/nix/pull/944)),
+  an `lutimes` wrapper ([#967](https://github.com/nix-rust/nix/pull/967)),
+  and a `utimes` wrapper ([#946](https://github.com/nix-rust/nix/pull/946)).
+- Added `AF_UNSPEC` wrapper to `AddressFamily` ([#948](https://github.com/nix-rust/nix/pull/948))
+- Added the `mode_t` public alias within `sys::stat`.
+  ([#954](https://github.com/nix-rust/nix/pull/954))
+- Added a `truncate` wrapper.
+  ([#956](https://github.com/nix-rust/nix/pull/956))
+- Added a `fchownat` wrapper.
+  ([#955](https://github.com/nix-rust/nix/pull/955))
+- Added support for `ptrace` on BSD operating systems ([#949](https://github.com/nix-rust/nix/pull/949))
+- Added `ptrace` functions for reads and writes to tracee memory and ptrace kill
+  ([#949](https://github.com/nix-rust/nix/pull/949)) ([#958](https://github.com/nix-rust/nix/pull/958))
+- Added a `acct` wrapper module for enabling and disabling process accounting
+  ([#952](https://github.com/nix-rust/nix/pull/952))
+- Added the `time_t` and `suseconds_t` public aliases within `sys::time`.
+  ([#968](https://github.com/nix-rust/nix/pull/968))
+- Added `unistd::execvpe` for Haiku, Linux and OpenBSD
+  ([#975](https://github.com/nix-rust/nix/pull/975))
+- Added `Error::as_errno`.
+  ([#977](https://github.com/nix-rust/nix/pull/977))
+
+### Changed
+- Increased required Rust version to 1.24.1
+  ([#900](https://github.com/nix-rust/nix/pull/900))
+  ([#966](https://github.com/nix-rust/nix/pull/966))
+
+### Fixed
+- Made `preadv` take immutable slice of IoVec.
+  ([#914](https://github.com/nix-rust/nix/pull/914))
+- Fixed passing multiple file descriptors over Unix Sockets.
+  ([#918](https://github.com/nix-rust/nix/pull/918))
+
+### Removed
 
 ## [0.11.0] 2018-06-01
 

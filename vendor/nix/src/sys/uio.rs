@@ -1,8 +1,8 @@
 // Silence invalid warnings due to rust-lang/rust#16719
 #![allow(improper_ctypes)]
 
-use Result;
-use errno::Errno;
+use crate::Result;
+use crate::errno::Errno;
 use libc::{self, c_int, c_void, size_t, off_t};
 use std::marker::PhantomData;
 use std::os::unix::io::RawFd;
@@ -51,7 +51,7 @@ pub fn pwritev(fd: RawFd, iov: &[IoVec<&[u8]>],
           target_os = "linux",
           target_os = "netbsd",
           target_os = "openbsd"))]
-pub fn preadv(fd: RawFd, iov: &mut [IoVec<&mut [u8]>],
+pub fn preadv(fd: RawFd, iov: &[IoVec<&mut [u8]>],
               offset: off_t) -> Result<usize> {
     let res = unsafe {
         libc::preadv(fd, iov.as_ptr() as *const libc::iovec, iov.len() as c_int, offset)
@@ -88,8 +88,7 @@ pub fn pread(fd: RawFd, buf: &mut [u8], offset: off_t) -> Result<usize>{
 /// and [`process_vm_writev`](fn.process_vm_writev.html).
 #[cfg(target_os = "linux")]
 #[repr(C)]
-#[derive(Clone, Copy)]
-#[allow(missing_debug_implementations)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RemoteIoVec {
     /// The starting address of this slice (`iov_base`).
     pub base: usize,
@@ -118,7 +117,11 @@ pub struct RemoteIoVec {
 /// [`IoVec`]: struct.IoVec.html
 /// [`RemoteIoVec`]: struct.RemoteIoVec.html
 #[cfg(target_os = "linux")]
-pub fn process_vm_writev(pid: ::unistd::Pid, local_iov: &[IoVec<&[u8]>], remote_iov: &[RemoteIoVec]) -> Result<usize> {
+pub fn process_vm_writev(
+    pid: crate::unistd::Pid,
+    local_iov: &[IoVec<&[u8]>],
+    remote_iov: &[RemoteIoVec]) -> Result<usize>
+{
     let res = unsafe {
         libc::process_vm_writev(pid.into(),
                                 local_iov.as_ptr() as *const libc::iovec, local_iov.len() as libc::c_ulong,
@@ -149,7 +152,11 @@ pub fn process_vm_writev(pid: ::unistd::Pid, local_iov: &[IoVec<&[u8]>], remote_
 /// [`IoVec`]: struct.IoVec.html
 /// [`RemoteIoVec`]: struct.RemoteIoVec.html
 #[cfg(any(target_os = "linux"))]
-pub fn process_vm_readv(pid: ::unistd::Pid, local_iov: &[IoVec<&mut [u8]>], remote_iov: &[RemoteIoVec]) -> Result<usize> {
+pub fn process_vm_readv(
+    pid: crate::unistd::Pid,
+    local_iov: &[IoVec<&mut [u8]>],
+    remote_iov: &[RemoteIoVec]) -> Result<usize>
+{
     let res = unsafe {
         libc::process_vm_readv(pid.into(),
                                local_iov.as_ptr() as *const libc::iovec, local_iov.len() as libc::c_ulong,
@@ -159,8 +166,8 @@ pub fn process_vm_readv(pid: ::unistd::Pid, local_iov: &[IoVec<&mut [u8]>], remo
     Errno::result(res).map(|r| r as usize)
 }
 
-#[repr(C)]
-#[allow(missing_debug_implementations)]
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct IoVec<T>(libc::iovec, PhantomData<T>);
 
 impl<T> IoVec<T> {

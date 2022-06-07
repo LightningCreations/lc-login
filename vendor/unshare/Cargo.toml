@@ -11,8 +11,9 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "unshare"
-version = "0.6.0"
+version = "0.7.0"
 authors = ["paul@colomiets.name"]
 description = "    The low-level interface for linux namespaces (containers)\n"
 homepage = "https://github.com/tailhook/unshare"
@@ -26,12 +27,12 @@ license = "MIT/Apache-2.0"
 name = "unshare"
 path = "src/lib.rs"
 [dependencies.libc]
-version = "0.2.26"
+version = "0.2.93"
 
 [dependencies.nix]
-version = "0.11.0"
+version = "0.20.0"
 [dev-dependencies.argparse]
-version = "0.2.1"
+version = "0.2.2"
 
 [dev-dependencies.rand]
-version = "0.4.2"
+version = "0.8.3"

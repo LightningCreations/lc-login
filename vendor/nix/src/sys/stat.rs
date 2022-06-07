@@ -1,12 +1,12 @@
-pub use libc::dev_t;
+pub use libc::{dev_t, mode_t};
 pub use libc::stat as FileStat;
 
-use {Result, NixPath};
-use errno::Errno;
-use fcntl::AtFlags;
-use libc::{self, mode_t};
+use crate::{Result, NixPath, errno::Errno};
+#[cfg(not(target_os = "redox"))]
+use crate::fcntl::{AtFlags, at_rawfd};
 use std::mem;
 use std::os::unix::io::RawFd;
+use crate::sys::time::{TimeSpec, TimeVal};
 
 libc_bitflags!(
     pub struct SFlag: mode_t {
@@ -42,11 +42,11 @@ libc_bitflags! {
 }
 
 pub fn mknod<P: ?Sized + NixPath>(path: &P, kind: SFlag, perm: Mode, dev: dev_t) -> Result<()> {
-    let res = try!(path.with_nix_path(|cstr| {
+    let res = path.with_nix_path(|cstr| {
         unsafe {
             libc::mknod(cstr.as_ptr(), kind.bits | perm.bits() as mode_t, dev)
         }
-    }));
+    })?;
 
     Errno::result(res).map(drop)
 }
@@ -77,49 +77,50 @@ pub fn umask(mode: Mode) -> Mode {
 }
 
 pub fn stat<P: ?Sized + NixPath>(path: &P) -> Result<FileStat> {
-    let mut dst = unsafe { mem::uninitialized() };
-    let res = try!(path.with_nix_path(|cstr| {
+    let mut dst = mem::MaybeUninit::uninit();
+    let res = path.with_nix_path(|cstr| {
         unsafe {
-            libc::stat(cstr.as_ptr(), &mut dst as *mut FileStat)
+            libc::stat(cstr.as_ptr(), dst.as_mut_ptr())
         }
-    }));
+    })?;
 
-    try!(Errno::result(res));
+    Errno::result(res)?;
 
-    Ok(dst)
+    Ok(unsafe{dst.assume_init()})
 }
 
 pub fn lstat<P: ?Sized + NixPath>(path: &P) -> Result<FileStat> {
-    let mut dst = unsafe { mem::uninitialized() };
-    let res = try!(path.with_nix_path(|cstr| {
+    let mut dst = mem::MaybeUninit::uninit();
+    let res = path.with_nix_path(|cstr| {
         unsafe {
-            libc::lstat(cstr.as_ptr(), &mut dst as *mut FileStat)
+            libc::lstat(cstr.as_ptr(), dst.as_mut_ptr())
         }
-    }));
+    })?;
 
-    try!(Errno::result(res));
+    Errno::result(res)?;
 
-    Ok(dst)
+    Ok(unsafe{dst.assume_init()})
 }
 
 pub fn fstat(fd: RawFd) -> Result<FileStat> {
-    let mut dst = unsafe { mem::uninitialized() };
-    let res = unsafe { libc::fstat(fd, &mut dst as *mut FileStat) };
+    let mut dst = mem::MaybeUninit::uninit();
+    let res = unsafe { libc::fstat(fd, dst.as_mut_ptr()) };
 
-    try!(Errno::result(res));
+    Errno::result(res)?;
 
-    Ok(dst)
+    Ok(unsafe{dst.assume_init()})
 }
 
+#[cfg(not(target_os = "redox"))]
 pub fn fstatat<P: ?Sized + NixPath>(dirfd: RawFd, pathname: &P, f: AtFlags) -> Result<FileStat> {
-    let mut dst = unsafe { mem::uninitialized() };
-    let res = try!(pathname.with_nix_path(|cstr| {
-        unsafe { libc::fstatat(dirfd, cstr.as_ptr(), &mut dst as *mut FileStat, f.bits() as libc::c_int) }
-    }));
+    let mut dst = mem::MaybeUninit::uninit();
+    let res = pathname.with_nix_path(|cstr| {
+        unsafe { libc::fstatat(dirfd, cstr.as_ptr(), dst.as_mut_ptr(), f.bits() as libc::c_int) }
+    })?;
 
-    try!(Errno::result(res));
+    Errno::result(res)?;
 
-    Ok(dst)
+    Ok(unsafe{dst.assume_init()})
 }
 
 /// Change the file permission bits of the file specified by a file descriptor.
@@ -130,7 +131,7 @@ pub fn fstatat<P: ?Sized + NixPath>(dirfd: RawFd, pathname: &P, f: AtFlags) -> R
 pub fn fchmod(fd: RawFd, mode: Mode) -> Result<()> {
     let res = unsafe { libc::fchmod(fd, mode.bits() as mode_t) };
 
-    Errno::result(res).map(|_| ())
+    Errno::result(res).map(drop)
 }
 
 /// Flags for `fchmodat` function.
@@ -149,24 +150,20 @@ pub enum FchmodatFlags {
 /// If `flag` is `FchmodatFlags::NoFollowSymlink` and `path` names a symbolic link,
 /// then the mode of the symbolic link is changed.
 ///
-/// `fchmod(None, path, mode, FchmodatFlags::FollowSymlink)` is identical to
+/// `fchmodat(None, path, mode, FchmodatFlags::FollowSymlink)` is identical to
 /// a call `libc::chmod(path, mode)`. That's why `chmod` is unimplemented
 /// in the `nix` crate.
 ///
 /// # References
 ///
 /// [fchmodat(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/fchmodat.html).
+#[cfg(not(target_os = "redox"))]
 pub fn fchmodat<P: ?Sized + NixPath>(
     dirfd: Option<RawFd>,
     path: &P,
     mode: Mode,
     flag: FchmodatFlags,
 ) -> Result<()> {
-    let actual_dirfd =
-        match dirfd {
-            None => libc::AT_FDCWD,
-            Some(fd) => fd,
-        };
     let atflag =
         match flag {
             FchmodatFlags::FollowSymlink => AtFlags::empty(),
@@ -174,12 +171,127 @@ pub fn fchmodat<P: ?Sized + NixPath>(
         };
     let res = path.with_nix_path(|cstr| unsafe {
         libc::fchmodat(
-            actual_dirfd,
+            at_rawfd(dirfd),
             cstr.as_ptr(),
             mode.bits() as mode_t,
             atflag.bits() as libc::c_int,
         )
     })?;
 
-    Errno::result(res).map(|_| ())
+    Errno::result(res).map(drop)
+}
+
+/// Change the access and modification times of a file.
+///
+/// `utimes(path, times)` is identical to
+/// `utimensat(None, path, times, UtimensatFlags::FollowSymlink)`. The former
+/// is a deprecated API so prefer using the latter if the platforms you care
+/// about support it.
+///
+/// # References
+///
+/// [utimes(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/utimes.html).
+pub fn utimes<P: ?Sized + NixPath>(path: &P, atime: &TimeVal, mtime: &TimeVal) -> Result<()> {
+    let times: [libc::timeval; 2] = [*atime.as_ref(), *mtime.as_ref()];
+    let res = path.with_nix_path(|cstr| unsafe {
+        libc::utimes(cstr.as_ptr(), &times[0])
+    })?;
+
+    Errno::result(res).map(drop)
+}
+
+/// Change the access and modification times of a file without following symlinks.
+///
+/// `lutimes(path, times)` is identical to
+/// `utimensat(None, path, times, UtimensatFlags::NoFollowSymlink)`. The former
+/// is a deprecated API so prefer using the latter if the platforms you care
+/// about support it.
+///
+/// # References
+///
+/// [lutimes(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/lutimes.html).
+#[cfg(any(target_os = "linux",
+          target_os = "haiku",
+          target_os = "ios",
+          target_os = "macos",
+          target_os = "freebsd",
+          target_os = "netbsd"))]
+pub fn lutimes<P: ?Sized + NixPath>(path: &P, atime: &TimeVal, mtime: &TimeVal) -> Result<()> {
+    let times: [libc::timeval; 2] = [*atime.as_ref(), *mtime.as_ref()];
+    let res = path.with_nix_path(|cstr| unsafe {
+        libc::lutimes(cstr.as_ptr(), &times[0])
+    })?;
+
+    Errno::result(res).map(drop)
+}
+
+/// Change the access and modification times of the file specified by a file descriptor.
+///
+/// # References
+///
+/// [futimens(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/futimens.html).
+#[inline]
+pub fn futimens(fd: RawFd, atime: &TimeSpec, mtime: &TimeSpec) -> Result<()> {
+    let times: [libc::timespec; 2] = [*atime.as_ref(), *mtime.as_ref()];
+    let res = unsafe { libc::futimens(fd, &times[0]) };
+
+    Errno::result(res).map(drop)
+}
+
+/// Flags for `utimensat` function.
+#[derive(Clone, Copy, Debug)]
+pub enum UtimensatFlags {
+    FollowSymlink,
+    NoFollowSymlink,
+}
+
+/// Change the access and modification times of a file.
+///
+/// The file to be changed is determined relative to the directory associated
+/// with the file descriptor `dirfd` or the current working directory
+/// if `dirfd` is `None`.
+///
+/// If `flag` is `UtimensatFlags::NoFollowSymlink` and `path` names a symbolic link,
+/// then the mode of the symbolic link is changed.
+///
+/// `utimensat(None, path, times, UtimensatFlags::FollowSymlink)` is identical to
+/// `utimes(path, times)`. The latter is a deprecated API so prefer using the
+/// former if the platforms you care about support it.
+///
+/// # References
+///
+/// [utimensat(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/utimens.html).
+#[cfg(not(target_os = "redox"))]
+pub fn utimensat<P: ?Sized + NixPath>(
+    dirfd: Option<RawFd>,
+    path: &P,
+    atime: &TimeSpec,
+    mtime: &TimeSpec,
+    flag: UtimensatFlags
+) -> Result<()> {
+    let atflag =
+        match flag {
+            UtimensatFlags::FollowSymlink => AtFlags::empty(),
+            UtimensatFlags::NoFollowSymlink => AtFlags::AT_SYMLINK_NOFOLLOW,
+        };
+    let times: [libc::timespec; 2] = [*atime.as_ref(), *mtime.as_ref()];
+    let res = path.with_nix_path(|cstr| unsafe {
+        libc::utimensat(
+            at_rawfd(dirfd),
+            cstr.as_ptr(),
+            &times[0],
+            atflag.bits() as libc::c_int,
+        )
+    })?;
+
+    Errno::result(res).map(drop)
+}
+
+#[cfg(not(target_os = "redox"))]
+pub fn mkdirat<P: ?Sized + NixPath>(fd: RawFd, path: &P, mode: Mode) -> Result<()> {
+    let res = path.with_nix_path(|cstr| {
+        unsafe { libc::mkdirat(fd, cstr.as_ptr(), mode.bits() as mode_t) }
+    })?;
+
+    Errno::result(res).map(drop)
 }

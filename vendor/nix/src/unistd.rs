@@ -1,18 +1,26 @@
 //! Safe wrappers around functions found in libc "unistd.h" header
 
-use errno::{self, Errno};
-use {Error, Result, NixPath};
-use fcntl::{fcntl, FdFlag, OFlag};
-use fcntl::FcntlArg::F_SETFD;
+#[cfg(not(target_os = "redox"))]
+use cfg_if::cfg_if;
+use crate::errno::{self, Errno};
+use crate::{Error, Result, NixPath};
+#[cfg(not(target_os = "redox"))]
+use crate::fcntl::{AtFlags, at_rawfd};
+use crate::fcntl::{FdFlag, OFlag, fcntl};
+use crate::fcntl::FcntlArg::F_SETFD;
 use libc::{self, c_char, c_void, c_int, c_long, c_uint, size_t, pid_t, off_t,
-           uid_t, gid_t, mode_t};
+           uid_t, gid_t, mode_t, PATH_MAX};
 use std::{fmt, mem, ptr};
-use std::ffi::{CString, CStr, OsString, OsStr};
-use std::os::unix::ffi::{OsStringExt, OsStrExt};
+use std::convert::Infallible;
+use std::ffi::{CStr, OsString};
+#[cfg(not(target_os = "redox"))]
+use std::ffi::{CString, OsStr};
+use std::os::unix::ffi::OsStringExt;
+#[cfg(not(target_os = "redox"))]
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::path::PathBuf;
-use void::Void;
-use sys::stat::Mode;
+use crate::sys::stat::Mode;
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
 pub use self::pivot_root::*;
@@ -45,8 +53,13 @@ impl Uid {
     }
 
     /// Returns true if the `Uid` represents privileged user - root. (If it equals zero.)
-    pub fn is_root(&self) -> bool {
-        *self == ROOT
+    pub fn is_root(self) -> bool {
+        self == ROOT
+    }
+
+    /// Get the raw `uid_t` wrapped by `self`.
+    pub fn as_raw(self) -> uid_t {
+        self.0
     }
 }
 
@@ -83,9 +96,14 @@ impl Gid {
         getgid()
     }
 
-    /// Returns effective Gid of calling process. This is practically a more Rusty alias for `getgid`.
+    /// Returns effective Gid of calling process. This is practically a more Rusty alias for `getegid`.
     pub fn effective() -> Self {
         getegid()
+    }
+
+    /// Get the raw `gid_t` wrapped by `self`.
+    pub fn as_raw(self) -> gid_t {
+        self.0
     }
 }
 
@@ -105,7 +123,7 @@ impl fmt::Display for Gid {
 ///
 /// Newtype pattern around `pid_t` (which is just alias). It prevents bugs caused by accidentally
 /// passing wrong value.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Pid(pid_t);
 
 impl Pid {
@@ -122,6 +140,11 @@ impl Pid {
     /// Returns PID of parent of calling process
     pub fn parent() -> Self {
         getppid()
+    }
+
+    /// Get the raw `pid_t` wrapped by `self`.
+    pub fn as_raw(self) -> pid_t {
+        self.0
     }
 }
 
@@ -153,8 +176,8 @@ impl ForkResult {
 
     /// Return `true` if this is the child process of the `fork()`
     #[inline]
-    pub fn is_child(&self) -> bool {
-        match *self {
+    pub fn is_child(self) -> bool {
+        match self {
             ForkResult::Child => true,
             _ => false
         }
@@ -162,7 +185,7 @@ impl ForkResult {
 
     /// Returns `true` if this is the parent process of the `fork()`
     #[inline]
-    pub fn is_parent(&self) -> bool {
+    pub fn is_parent(self) -> bool {
         !self.is_child()
     }
 }
@@ -177,7 +200,7 @@ impl ForkResult {
 /// ```no_run
 /// use nix::unistd::{fork, ForkResult};
 ///
-/// match fork() {
+/// match unsafe{fork()} {
 ///    Ok(ForkResult::Parent { child, .. }) => {
 ///        println!("Continuing execution in parent process, new child has pid: {}", child);
 ///    }
@@ -207,9 +230,9 @@ impl ForkResult {
 ///
 /// [async-signal-safe]: http://man7.org/linux/man-pages/man7/signal-safety.7.html
 #[inline]
-pub fn fork() -> Result<ForkResult> {
+pub unsafe fn fork() -> Result<ForkResult> {
     use self::ForkResult::*;
-    let res = unsafe { libc::fork() };
+    let res = libc::fork();
 
     Errno::result(res).map(|res| match res {
         0 => Child,
@@ -270,6 +293,7 @@ pub fn setsid() -> Result<Pid> {
 /// Obtain the process group ID of the process that is the session leader of the process specified
 /// by pid. If pid is zero, it specifies the calling process.
 #[inline]
+#[cfg(not(target_os = "redox"))]
 pub fn getsid(pid: Option<Pid>) -> Result<Pid> {
     let res = unsafe { libc::getsid(pid.unwrap_or(Pid(0)).into()) };
     Errno::result(res).map(Pid)
@@ -369,7 +393,7 @@ fn dup3_polyfill(oldfd: RawFd, newfd: RawFd, flags: OFlag) -> Result<RawFd> {
         return Err(Error::Sys(Errno::EINVAL));
     }
 
-    let fd = try!(dup2(oldfd, newfd));
+    let fd = dup2(oldfd, newfd)?;
 
     if flags.contains(OFlag::O_CLOEXEC) {
         if let Err(e) = fcntl(fd, F_SETFD(FdFlag::FD_CLOEXEC)) {
@@ -388,9 +412,9 @@ fn dup3_polyfill(oldfd: RawFd, newfd: RawFd, flags: OFlag) -> Result<RawFd> {
 /// pages for additional details on possible failure cases.
 #[inline]
 pub fn chdir<P: ?Sized + NixPath>(path: &P) -> Result<()> {
-    let res = try!(path.with_nix_path(|cstr| {
+    let res = path.with_nix_path(|cstr| {
         unsafe { libc::chdir(cstr.as_ptr()) }
-    }));
+    })?;
 
     Errno::result(res).map(drop)
 }
@@ -402,6 +426,7 @@ pub fn chdir<P: ?Sized + NixPath>(path: &P) -> Result<()> {
 /// This function may fail in a number of different scenarios.  See the man
 /// pages for additional details on possible failure cases.
 #[inline]
+#[cfg(not(target_os = "fuchsia"))]
 pub fn fchdir(dirfd: RawFd) -> Result<()> {
     let res = unsafe { libc::fchdir(dirfd) };
 
@@ -421,15 +446,12 @@ pub fn fchdir(dirfd: RawFd) -> Result<()> {
 /// # Example
 ///
 /// ```rust
-/// extern crate tempdir;
-/// extern crate nix;
-///
 /// use nix::unistd;
 /// use nix::sys::stat;
-/// use tempdir::TempDir;
+/// use tempfile::tempdir;
 ///
 /// fn main() {
-///     let tmp_dir1 = TempDir::new("test_mkdir").unwrap();
+///     let tmp_dir1 = tempdir().unwrap();
 ///     let tmp_dir2 = tmp_dir1.path().join("new_dir");
 ///
 ///     // create new directory and give read, write and execute rights to the owner
@@ -441,9 +463,9 @@ pub fn fchdir(dirfd: RawFd) -> Result<()> {
 /// ```
 #[inline]
 pub fn mkdir<P: ?Sized + NixPath>(path: &P, mode: Mode) -> Result<()> {
-    let res = try!(path.with_nix_path(|cstr| {
+    let res = path.with_nix_path(|cstr| {
         unsafe { libc::mkdir(cstr.as_ptr(), mode.bits() as mode_t) }
-    }));
+    })?;
 
     Errno::result(res).map(drop)
 }
@@ -464,15 +486,12 @@ pub fn mkdir<P: ?Sized + NixPath>(path: &P, mode: Mode) -> Result<()> {
 /// # Example
 ///
 /// ```rust
-/// extern crate tempdir;
-/// extern crate nix;
-///
 /// use nix::unistd;
 /// use nix::sys::stat;
-/// use tempdir::TempDir;
+/// use tempfile::tempdir;
 ///
 /// fn main() {
-///     let tmp_dir = TempDir::new("test_fifo").unwrap();
+///     let tmp_dir = tempdir().unwrap();
 ///     let fifo_path = tmp_dir.path().join("foo.pipe");
 ///
 ///     // create new fifo and give read, write and execute rights to the owner
@@ -483,12 +502,79 @@ pub fn mkdir<P: ?Sized + NixPath>(path: &P, mode: Mode) -> Result<()> {
 /// }
 /// ```
 #[inline]
+#[cfg(not(target_os = "redox"))] // RedoxFS does not support fifo yet
 pub fn mkfifo<P: ?Sized + NixPath>(path: &P, mode: Mode) -> Result<()> {
-    let res = try!(path.with_nix_path(|cstr| {
+    let res = path.with_nix_path(|cstr| {
         unsafe { libc::mkfifo(cstr.as_ptr(), mode.bits() as mode_t) }
-    }));
+    })?;
 
     Errno::result(res).map(drop)
+}
+
+/// Creates new fifo special file (named pipe) with path `path` and access rights `mode`.
+///
+/// If `dirfd` has a value, then `path` is relative to directory associated with the file descriptor.
+///
+/// If `dirfd` is `None`, then `path` is relative to the current working directory.
+///
+/// # References
+///
+/// [mkfifoat(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/mkfifoat.html).
+// mkfifoat is not implemented in OSX or android
+#[inline]
+#[cfg(not(any(
+    target_os = "macos", target_os = "ios",
+    target_os = "android", target_os = "redox")))]
+pub fn mkfifoat<P: ?Sized + NixPath>(dirfd: Option<RawFd>, path: &P, mode: Mode) -> Result<()> {
+    let res = path.with_nix_path(|cstr| unsafe {
+        libc::mkfifoat(at_rawfd(dirfd), cstr.as_ptr(), mode.bits() as mode_t)
+    })?;
+
+    Errno::result(res).map(drop)
+}
+
+/// Creates a symbolic link at `path2` which points to `path1`.
+///
+/// If `dirfd` has a value, then `path2` is relative to directory associated
+/// with the file descriptor.
+///
+/// If `dirfd` is `None`, then `path2` is relative to the current working
+/// directory. This is identical to `libc::symlink(path1, path2)`.
+///
+/// See also [symlinkat(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/symlinkat.html).
+#[cfg(not(target_os = "redox"))]
+pub fn symlinkat<P1: ?Sized + NixPath, P2: ?Sized + NixPath>(
+    path1: &P1,
+    dirfd: Option<RawFd>,
+    path2: &P2) -> Result<()> {
+    let res =
+        path1.with_nix_path(|path1| {
+            path2.with_nix_path(|path2| {
+                unsafe {
+                    libc::symlinkat(
+                        path1.as_ptr(),
+                        dirfd.unwrap_or(libc::AT_FDCWD),
+                        path2.as_ptr()
+                    )
+                }
+            })
+        })??;
+    Errno::result(res).map(drop)
+}
+
+// Double the buffer capacity up to limit. In case it already has
+// reached the limit, return Errno::ERANGE.
+fn reserve_double_buffer_size<T>(buf: &mut Vec<T>, limit: usize) -> Result<()> {
+    use std::cmp::min;
+
+    if buf.capacity() >= limit {
+        return Err(Error::Sys(Errno::ERANGE))
+    }
+
+    let capacity = min(buf.capacity() * 2, limit);
+    buf.reserve(capacity);
+
+    Ok(())
 }
 
 /// Returns the current directory as a `PathBuf`
@@ -499,8 +585,6 @@ pub fn mkfifo<P: ?Sized + NixPath>(path: &P, mode: Mode) -> Result<()> {
 /// # Example
 ///
 /// ```rust
-/// extern crate nix;
-///
 /// use nix::unistd;
 ///
 /// fn main() {
@@ -533,13 +617,22 @@ pub fn getcwd() -> Result<PathBuf> {
                 }
             }
 
-            // Trigger the internal buffer resizing logic of `Vec` by requiring
-            // more space than the current capacity.
-            let cap = buf.capacity();
-            buf.set_len(cap);
-            buf.reserve(1);
+            // Trigger the internal buffer resizing logic.
+            reserve_double_buffer_size(&mut buf, PATH_MAX as usize)?;
         }
     }
+}
+
+/// Computes the raw UID and GID values to pass to a `*chown` call.
+fn chown_raw_ids(owner: Option<Uid>, group: Option<Gid>) -> (libc::uid_t, libc::gid_t) {
+    // According to the POSIX specification, -1 is used to indicate that owner and group
+    // are not to be changed.  Since uid_t and gid_t are unsigned types, we have to wrap
+    // around to get -1.
+    let uid = owner.map(Into::into)
+        .unwrap_or_else(|| (0 as uid_t).wrapping_sub(1));
+    let gid = group.map(Into::into)
+        .unwrap_or_else(|| (0 as gid_t).wrapping_sub(1));
+    (uid, gid)
 }
 
 /// Change the ownership of the file at `path` to be owned by the specified
@@ -551,22 +644,81 @@ pub fn getcwd() -> Result<PathBuf> {
 /// only if `Some` owner/group is provided.
 #[inline]
 pub fn chown<P: ?Sized + NixPath>(path: &P, owner: Option<Uid>, group: Option<Gid>) -> Result<()> {
-    let res = try!(path.with_nix_path(|cstr| {
-        // According to the POSIX specification, -1 is used to indicate that
-        // owner and group, respectively, are not to be changed. Since uid_t and
-        // gid_t are unsigned types, we use wrapping_sub to get '-1'.
-        unsafe { libc::chown(cstr.as_ptr(),
-                             owner.map(Into::into).unwrap_or((0 as uid_t).wrapping_sub(1)),
-                             group.map(Into::into).unwrap_or((0 as gid_t).wrapping_sub(1))) }
-    }));
+    let res = path.with_nix_path(|cstr| {
+        let (uid, gid) = chown_raw_ids(owner, group);
+        unsafe { libc::chown(cstr.as_ptr(), uid, gid) }
+    })?;
 
     Errno::result(res).map(drop)
 }
 
-fn to_exec_array(args: &[CString]) -> Vec<*const c_char> {
-    let mut args_p: Vec<*const c_char> = args.iter().map(|s| s.as_ptr()).collect();
-    args_p.push(ptr::null());
-    args_p
+/// Change the ownership of the file referred to by the open file descriptor `fd` to be owned by
+/// the specified `owner` (user) and `group` (see
+/// [fchown(2)](https://pubs.opengroup.org/onlinepubs/9699919799/functions/fchown.html)).
+///
+/// The owner/group for the provided file will not be modified if `None` is
+/// provided for that argument.  Ownership change will be attempted for the path
+/// only if `Some` owner/group is provided.
+#[inline]
+pub fn fchown(fd: RawFd, owner: Option<Uid>, group: Option<Gid>) -> Result<()> {
+    let (uid, gid) = chown_raw_ids(owner, group);
+    let res = unsafe { libc::fchown(fd, uid, gid) };
+    Errno::result(res).map(drop)
+}
+
+/// Flags for `fchownat` function.
+#[derive(Clone, Copy, Debug)]
+pub enum FchownatFlags {
+    FollowSymlink,
+    NoFollowSymlink,
+}
+
+/// Change the ownership of the file at `path` to be owned by the specified
+/// `owner` (user) and `group`.
+///
+/// The owner/group for the provided path name will not be modified if `None` is
+/// provided for that argument.  Ownership change will be attempted for the path
+/// only if `Some` owner/group is provided.
+///
+/// The file to be changed is determined relative to the directory associated
+/// with the file descriptor `dirfd` or the current working directory
+/// if `dirfd` is `None`.
+///
+/// If `flag` is `FchownatFlags::NoFollowSymlink` and `path` names a symbolic link,
+/// then the mode of the symbolic link is changed.
+///
+/// `fchownat(None, path, mode, FchownatFlags::NoFollowSymlink)` is identical to
+/// a call `libc::lchown(path, mode)`.  That's why `lchmod` is unimplemented in
+/// the `nix` crate.
+///
+/// # References
+///
+/// [fchownat(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/fchownat.html).
+#[cfg(not(target_os = "redox"))]
+pub fn fchownat<P: ?Sized + NixPath>(
+    dirfd: Option<RawFd>,
+    path: &P,
+    owner: Option<Uid>,
+    group: Option<Gid>,
+    flag: FchownatFlags,
+) -> Result<()> {
+    let atflag =
+        match flag {
+            FchownatFlags::FollowSymlink => AtFlags::empty(),
+            FchownatFlags::NoFollowSymlink => AtFlags::AT_SYMLINK_NOFOLLOW,
+        };
+    let res = path.with_nix_path(|cstr| unsafe {
+        let (uid, gid) = chown_raw_ids(owner, group);
+        libc::fchownat(at_rawfd(dirfd), cstr.as_ptr(), uid, gid,
+                       atflag.bits() as libc::c_int)
+    })?;
+
+    Errno::result(res).map(drop)
+}
+
+fn to_exec_array<S: AsRef<CStr>>(args: &[S]) -> Vec<*const c_char> {
+    use std::iter::once;
+    args.iter().map(|s| s.as_ref().as_ptr()).chain(once(ptr::null())).collect()
 }
 
 /// Replace the current process image with a new one (see
@@ -576,7 +728,7 @@ fn to_exec_array(args: &[CString]) -> Vec<*const c_char> {
 /// performs the same action but does not allow for customization of the
 /// environment for the new process.
 #[inline]
-pub fn execv(path: &CString, argv: &[CString]) -> Result<Void> {
+pub fn execv<S: AsRef<CStr>>(path: &CStr, argv: &[S]) -> Result<Infallible> {
     let args_p = to_exec_array(argv);
 
     unsafe {
@@ -600,7 +752,7 @@ pub fn execv(path: &CString, argv: &[CString]) -> Result<Void> {
 /// in the `args` list is an argument to the new process. Each element in the
 /// `env` list should be a string in the form "key=value".
 #[inline]
-pub fn execve(path: &CString, args: &[CString], env: &[CString]) -> Result<Void> {
+pub fn execve<SA: AsRef<CStr>, SE: AsRef<CStr>>(path: &CStr, args: &[SA], env: &[SE]) -> Result<Infallible> {
     let args_p = to_exec_array(args);
     let env_p = to_exec_array(env);
 
@@ -621,11 +773,32 @@ pub fn execve(path: &CString, args: &[CString], env: &[CString]) -> Result<Void>
 /// would not work if "bash" was specified for the path argument, but `execvp`
 /// would assuming that a bash executable was on the system `PATH`.
 #[inline]
-pub fn execvp(filename: &CString, args: &[CString]) -> Result<Void> {
+pub fn execvp<S: AsRef<CStr>>(filename: &CStr, args: &[S]) -> Result<Infallible> {
     let args_p = to_exec_array(args);
 
     unsafe {
         libc::execvp(filename.as_ptr(), args_p.as_ptr())
+    };
+
+    Err(Error::Sys(Errno::last()))
+}
+
+/// Replace the current process image with a new one and replicate shell `PATH`
+/// searching behavior (see
+/// [`execvpe(3)`](http://man7.org/linux/man-pages/man3/exec.3.html)).
+///
+/// This functions like a combination of `execvp(2)` and `execve(2)` to pass an
+/// environment and have a search path. See these two for additional
+/// information.
+#[cfg(any(target_os = "haiku",
+          target_os = "linux",
+          target_os = "openbsd"))]
+pub fn execvpe<SA: AsRef<CStr>, SE: AsRef<CStr>>(filename: &CStr, args: &[SA], env: &[SE]) -> Result<Infallible> {
+    let args_p = to_exec_array(args);
+    let env_p = to_exec_array(env);
+
+    unsafe {
+        libc::execvpe(filename.as_ptr(), args_p.as_ptr(), env_p.as_ptr())
     };
 
     Err(Error::Sys(Errno::last()))
@@ -641,11 +814,14 @@ pub fn execvp(filename: &CString, args: &[CString]) -> Result<Void> {
 ///
 /// This function is similar to `execve`, except that the program to be executed
 /// is referenced as a file descriptor instead of a path.
+// Note for NetBSD and OpenBSD: although rust-lang/libc includes it (under
+// unix/bsd/netbsdlike/) fexecve is not currently implemented on NetBSD nor on
+// OpenBSD.
 #[cfg(any(target_os = "android",
-          target_os = "freebsd",
-          target_os = "linux"))]
+          target_os = "linux",
+          target_os = "freebsd"))]
 #[inline]
-pub fn fexecve(fd: RawFd, args: &[CString], env: &[CString]) -> Result<Void> {
+pub fn fexecve<SA: AsRef<CStr> ,SE: AsRef<CStr>>(fd: RawFd, args: &[SA], env: &[SE]) -> Result<Infallible> {
     let args_p = to_exec_array(args);
     let env_p = to_exec_array(env);
 
@@ -668,8 +844,8 @@ pub fn fexecve(fd: RawFd, args: &[CString], env: &[CString]) -> Result<Void> {
 /// is referenced as a file descriptor to the base directory plus a path.
 #[cfg(any(target_os = "android", target_os = "linux"))]
 #[inline]
-pub fn execveat(dirfd: RawFd, pathname: &CString, args: &[CString],
-                env: &[CString], flags: super::fcntl::AtFlags) -> Result<Void> {
+pub fn execveat<SA: AsRef<CStr>,SE: AsRef<CStr>>(dirfd: RawFd, pathname: &CStr, args: &[SA],
+                env: &[SE], flags: super::fcntl::AtFlags) -> Result<Infallible> {
     let args_p = to_exec_array(args);
     let env_p = to_exec_array(env);
 
@@ -706,11 +882,12 @@ pub fn execveat(dirfd: RawFd, pathname: &CString, args: &[CString],
 ///   descriptors will remain identical after daemonizing.
 /// * `noclose = false`: The process' stdin, stdout, and stderr will point to
 ///   `/dev/null` after daemonizing.
-#[cfg_attr(any(target_os = "macos", target_os = "ios"), deprecated(
-    since="0.14.0",
-    note="Deprecated in MacOSX 10.5"
-))]
-#[cfg_attr(any(target_os = "macos", target_os = "ios"), allow(deprecated))]
+#[cfg(any(target_os = "android",
+          target_os = "dragonfly",
+          target_os = "freebsd",
+          target_os = "linux",
+          target_os = "netbsd",
+          target_os = "openbsd"))]
 pub fn daemon(nochdir: bool, noclose: bool) -> Result<()> {
     let res = unsafe { libc::daemon(nochdir as c_int, noclose as c_int) };
     Errno::result(res).map(drop)
@@ -723,6 +900,7 @@ pub fn daemon(nochdir: bool, noclose: bool) -> Result<()> {
 /// On some systems, the host name is limited to as few as 64 bytes.  An error
 /// will be return if the name is not valid or the current process does not have
 /// permissions to update the host name.
+#[cfg(not(target_os = "redox"))]
 pub fn sethostname<S: AsRef<OsStr>>(name: S) -> Result<()> {
     // Handle some differences in type of the len arg across platforms.
     cfg_if! {
@@ -784,9 +962,6 @@ pub fn gethostname(buffer: &mut [u8]) -> Result<&CStr> {
 /// # Examples
 ///
 /// ```no_run
-/// extern crate tempfile;
-/// extern crate nix;
-///
 /// use std::os::unix::io::AsRawFd;
 /// use nix::unistd::close;
 ///
@@ -797,9 +972,6 @@ pub fn gethostname(buffer: &mut [u8]) -> Result<&CStr> {
 /// ```
 ///
 /// ```rust
-/// extern crate tempfile;
-/// extern crate nix;
-///
 /// use std::os::unix::io::IntoRawFd;
 /// use nix::unistd::close;
 ///
@@ -847,20 +1019,14 @@ pub enum Whence {
     /// Specify an offset relative to the next location in the file greater than or
     /// equal to offset that contains some data. If offset points to
     /// some data, then the file offset is set to offset.
-    #[cfg(any(target_os = "dragonfly", target_os = "freebsd",
-          all(target_os = "linux", not(any(target_env = "musl",
-                                           target_arch = "mips",
-                                           target_arch = "mips64")))))]
+    #[cfg(any(target_os = "dragonfly", target_os = "freebsd", target_os = "linux"))]
     SeekData = libc::SEEK_DATA,
     /// Specify an offset relative to the next hole in the file greater than
     /// or equal to offset. If offset points into the middle of a hole, then
     /// the file offset should be set to offset. If there is no hole past offset,
     /// then the file offset should be adjusted to the end of the file (i.e., there
     /// is an implicit hole at the end of any file).
-    #[cfg(any(target_os = "dragonfly", target_os = "freebsd",
-          all(target_os = "linux", not(any(target_env = "musl",
-                                           target_arch = "mips",
-                                           target_arch = "mips64")))))]
+    #[cfg(any(target_os = "dragonfly", target_os = "freebsd", target_os = "linux"))]
     SeekHole = libc::SEEK_HOLE
 }
 
@@ -885,13 +1051,13 @@ pub fn lseek64(fd: RawFd, offset: libc::off64_t, whence: Whence) -> Result<libc:
 /// See also [pipe(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/pipe.html)
 pub fn pipe() -> Result<(RawFd, RawFd)> {
     unsafe {
-        let mut fds: [c_int; 2] = mem::uninitialized();
+        let mut fds = mem::MaybeUninit::<[c_int; 2]>::uninit();
 
-        let res = libc::pipe(fds.as_mut_ptr());
+        let res = libc::pipe(fds.as_mut_ptr() as *mut c_int);
 
-        try!(Errno::result(res));
+        Errno::result(res)?;
 
-        Ok((fds[0], fds[1]))
+        Ok((fds.assume_init()[0], fds.assume_init()[1]))
     }
 }
 
@@ -900,7 +1066,9 @@ pub fn pipe() -> Result<(RawFd, RawFd)> {
 /// The following flags are supported, and will be set atomically as the pipe is
 /// created:
 ///
-/// `O_CLOEXEC`:    Set the close-on-exec flag for the new file descriptors.
+/// `O_CLOEXEC`:    Set the close-on-exec flag for the new file descriptors.  
+#[cfg_attr(target_os = "linux", doc = "`O_DIRECT`: Create a pipe that performs I/O in \"packet\" mode.  ")]
+#[cfg_attr(target_os = "netbsd", doc = "`O_NOSIGPIPE`: Return `EPIPE` instead of raising `SIGPIPE`.  ")]
 /// `O_NONBLOCK`:   Set the non-blocking flag for the ends of the pipe.
 ///
 /// See also [pipe(2)](http://man7.org/linux/man-pages/man2/pipe.2.html)
@@ -909,68 +1077,34 @@ pub fn pipe() -> Result<(RawFd, RawFd)> {
           target_os = "emscripten",
           target_os = "freebsd",
           target_os = "linux",
+          target_os = "redox",
           target_os = "netbsd",
           target_os = "openbsd"))]
 pub fn pipe2(flags: OFlag) -> Result<(RawFd, RawFd)> {
-    let mut fds: [c_int; 2] = unsafe { mem::uninitialized() };
+    let mut fds = mem::MaybeUninit::<[c_int; 2]>::uninit();
 
-    let res = unsafe { libc::pipe2(fds.as_mut_ptr(), flags.bits()) };
+    let res = unsafe {
+        libc::pipe2(fds.as_mut_ptr() as *mut c_int, flags.bits())
+    };
 
-    try!(Errno::result(res));
+    Errno::result(res)?;
 
-    Ok((fds[0], fds[1]))
+    unsafe { Ok((fds.assume_init()[0], fds.assume_init()[1])) }
 }
 
-/// Like `pipe`, but allows setting certain file descriptor flags.
+/// Truncate a file to a specified length
 ///
-/// The following flags are supported, and will be set after the pipe is
-/// created:
-///
-/// `O_CLOEXEC`:    Set the close-on-exec flag for the new file descriptors.
-/// `O_NONBLOCK`:   Set the non-blocking flag for the ends of the pipe.
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-#[deprecated(
-    since="0.10.0",
-    note="pipe2(2) is not actually atomic on these platforms.  Use pipe(2) and fcntl(2) instead"
-)]
-pub fn pipe2(flags: OFlag) -> Result<(RawFd, RawFd)> {
-    let mut fds: [c_int; 2] = unsafe { mem::uninitialized() };
-
-    let res = unsafe { libc::pipe(fds.as_mut_ptr()) };
-
-    try!(Errno::result(res));
-
-    try!(pipe2_setflags(fds[0], fds[1], flags));
-
-    Ok((fds[0], fds[1]))
-}
-
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-fn pipe2_setflags(fd1: RawFd, fd2: RawFd, flags: OFlag) -> Result<()> {
-    use fcntl::FcntlArg::F_SETFL;
-
-    let mut res = Ok(0);
-
-    if flags.contains(OFlag::O_CLOEXEC) {
-        res = res
-            .and_then(|_| fcntl(fd1, F_SETFD(FdFlag::FD_CLOEXEC)))
-            .and_then(|_| fcntl(fd2, F_SETFD(FdFlag::FD_CLOEXEC)));
-    }
-
-    if flags.contains(OFlag::O_NONBLOCK) {
-        res = res
-            .and_then(|_| fcntl(fd1, F_SETFL(OFlag::O_NONBLOCK)))
-            .and_then(|_| fcntl(fd2, F_SETFL(OFlag::O_NONBLOCK)));
-    }
-
-    match res {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            let _ = close(fd1);
-            let _ = close(fd2);
-            Err(e)
+/// See also
+/// [truncate(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/truncate.html)
+#[cfg(not(any(target_os = "redox", target_os = "fuchsia")))]
+pub fn truncate<P: ?Sized + NixPath>(path: &P, len: off_t) -> Result<()> {
+    let res = path.with_nix_path(|cstr| {
+        unsafe {
+            libc::truncate(cstr.as_ptr(), len)
         }
-    }
+    })?;
+
+    Errno::result(res).map(drop)
 }
 
 /// Truncate a file to a specified length
@@ -996,25 +1130,130 @@ pub fn isatty(fd: RawFd) -> Result<bool> {
     }
 }
 
+/// Flags for `linkat` function.
+#[derive(Clone, Copy, Debug)]
+pub enum LinkatFlags {
+    SymlinkFollow,
+    NoSymlinkFollow,
+}
+
+/// Link one file to another file
+///
+/// Creates a new link (directory entry) at `newpath` for the existing file at `oldpath`. In the
+/// case of a relative `oldpath`, the path is interpreted relative to the directory associated
+/// with file descriptor `olddirfd` instead of the current working directory and similiarly for
+/// `newpath` and file descriptor `newdirfd`. In case `flag` is LinkatFlags::SymlinkFollow and
+/// `oldpath` names a symoblic link, a new link for the target of the symbolic link is created.
+/// If either `olddirfd` or `newdirfd` is `None`, `AT_FDCWD` is used respectively where `oldpath`
+/// and/or `newpath` is then interpreted relative to the current working directory of the calling
+/// process. If either `oldpath` or `newpath` is absolute, then `dirfd` is ignored.
+///
+/// # References
+/// See also [linkat(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/linkat.html)
+#[cfg(not(target_os = "redox"))] // RedoxFS does not support symlinks yet
+pub fn linkat<P: ?Sized + NixPath>(
+    olddirfd: Option<RawFd>,
+    oldpath: &P,
+    newdirfd: Option<RawFd>,
+    newpath: &P,
+    flag: LinkatFlags,
+) -> Result<()> {
+
+    let atflag =
+        match flag {
+            LinkatFlags::SymlinkFollow => AtFlags::AT_SYMLINK_FOLLOW,
+            LinkatFlags::NoSymlinkFollow => AtFlags::empty(),
+        };
+
+    let res =
+        oldpath.with_nix_path(|oldcstr| {
+            newpath.with_nix_path(|newcstr| {
+            unsafe {
+                libc::linkat(
+                    at_rawfd(olddirfd),
+                    oldcstr.as_ptr(),
+                    at_rawfd(newdirfd),
+                    newcstr.as_ptr(),
+                    atflag.bits() as libc::c_int
+                    )
+                }
+            })
+        })??;
+    Errno::result(res).map(drop)
+}
+
+
 /// Remove a directory entry
 ///
 /// See also [unlink(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/unlink.html)
 pub fn unlink<P: ?Sized + NixPath>(path: &P) -> Result<()> {
-    let res = try!(path.with_nix_path(|cstr| {
+    let res = path.with_nix_path(|cstr| {
         unsafe {
             libc::unlink(cstr.as_ptr())
         }
-    }));
+    })?;
     Errno::result(res).map(drop)
 }
 
+/// Flags for `unlinkat` function.
+#[derive(Clone, Copy, Debug)]
+pub enum UnlinkatFlags {
+    RemoveDir,
+    NoRemoveDir,
+}
+
+/// Remove a directory entry
+///
+/// In the case of a relative path, the directory entry to be removed is determined relative to
+/// the directory associated with the file descriptor `dirfd` or the current working directory
+/// if `dirfd` is `None`. In the case of an absolute `path` `dirfd` is ignored. If `flag` is
+/// `UnlinkatFlags::RemoveDir` then removal of the directory entry specified by `dirfd` and `path`
+/// is performed.
+///
+/// # References
+/// See also [unlinkat(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/unlinkat.html)
+#[cfg(not(target_os = "redox"))]
+pub fn unlinkat<P: ?Sized + NixPath>(
+    dirfd: Option<RawFd>,
+    path: &P,
+    flag: UnlinkatFlags,
+) -> Result<()> {
+    let atflag =
+        match flag {
+            UnlinkatFlags::RemoveDir => AtFlags::AT_REMOVEDIR,
+            UnlinkatFlags::NoRemoveDir => AtFlags::empty(),
+        };
+    let res = path.with_nix_path(|cstr| {
+        unsafe {
+            libc::unlinkat(at_rawfd(dirfd), cstr.as_ptr(), atflag.bits() as libc::c_int)
+        }
+    })?;
+    Errno::result(res).map(drop)
+}
+
+
 #[inline]
+#[cfg(not(target_os = "fuchsia"))]
 pub fn chroot<P: ?Sized + NixPath>(path: &P) -> Result<()> {
-    let res = try!(path.with_nix_path(|cstr| {
+    let res = path.with_nix_path(|cstr| {
         unsafe { libc::chroot(cstr.as_ptr()) }
-    }));
+    })?;
 
     Errno::result(res).map(drop)
+}
+
+/// Commit filesystem caches to disk
+///
+/// See also [sync(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/sync.html)
+#[cfg(any(
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "linux",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+pub fn sync() {
+    unsafe { libc::sync() };
 }
 
 /// Synchronize changes to a file
@@ -1083,6 +1322,26 @@ pub fn getegid() -> Gid {
     Gid(unsafe { libc::getegid() })
 }
 
+/// Set the effective user ID
+///
+/// See also [seteuid(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/seteuid.html)
+#[inline]
+pub fn seteuid(euid: Uid) -> Result<()> {
+    let res = unsafe { libc::seteuid(euid.into()) };
+
+    Errno::result(res).map(drop)
+}
+
+/// Set the effective group ID
+///
+/// See also [setegid(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/setegid.html)
+#[inline]
+pub fn setegid(egid: Gid) -> Result<()> {
+    let res = unsafe { libc::setegid(egid.into()) };
+
+    Errno::result(res).map(drop)
+}
+
 /// Set the user ID
 ///
 /// See also [setuid(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/setuid.html)
@@ -1093,7 +1352,7 @@ pub fn setuid(uid: Uid) -> Result<()> {
     Errno::result(res).map(drop)
 }
 
-/// Set the user ID
+/// Set the group ID
 ///
 /// See also [setgid(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/setgid.html)
 #[inline]
@@ -1101,6 +1360,28 @@ pub fn setgid(gid: Gid) -> Result<()> {
     let res = unsafe { libc::setgid(gid.into()) };
 
     Errno::result(res).map(drop)
+}
+
+/// Set the user identity used for filesystem checks per-thread.
+/// On both success and failure, this call returns the previous filesystem user
+/// ID of the caller.
+///
+/// See also [setfsuid(2)](http://man7.org/linux/man-pages/man2/setfsuid.2.html)
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn setfsuid(uid: Uid) -> Uid {
+    let prev_fsuid = unsafe { libc::setfsuid(uid.into()) };
+    Uid::from_raw(prev_fsuid as uid_t)
+}
+
+/// Set the group identity used for filesystem checks per-thread.
+/// On both success and failure, this call returns the previous filesystem group
+/// ID of the caller.
+///
+/// See also [setfsgid(2)](http://man7.org/linux/man-pages/man2/setfsgid.2.html)
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn setfsgid(gid: Gid) -> Gid {
+    let prev_fsgid = unsafe { libc::setfsgid(gid.into()) };
+    Gid::from_raw(prev_fsgid as gid_t)
 }
 
 /// Get the list of supplementary group IDs of the calling process.
@@ -1112,33 +1393,39 @@ pub fn setgid(gid: Gid) -> Result<()> {
 /// with the `opendirectoryd` service.
 #[cfg(not(any(target_os = "ios", target_os = "macos")))]
 pub fn getgroups() -> Result<Vec<Gid>> {
-    // First get the number of groups so we can size our Vec
-    let ret = unsafe { libc::getgroups(0, ptr::null_mut()) };
+    // First get the maximum number of groups. The value returned
+    // shall always be greater than or equal to one and less than or
+    // equal to the value of {NGROUPS_MAX} + 1.
+    let ngroups_max = match sysconf(SysconfVar::NGROUPS_MAX) {
+        Ok(Some(n)) => (n + 1) as usize,
+        Ok(None) | Err(_) => <usize>::max_value(),
+    };
+
+    // Next, get the number of groups so we can size our Vec
+    let ngroups = unsafe { libc::getgroups(0, ptr::null_mut()) };
 
     // Now actually get the groups. We try multiple times in case the number of
     // groups has changed since the first call to getgroups() and the buffer is
     // now too small.
-    let mut groups = Vec::<Gid>::with_capacity(Errno::result(ret)? as usize);
+    let mut groups = Vec::<Gid>::with_capacity(Errno::result(ngroups)? as usize);
     loop {
         // FIXME: On the platforms we currently support, the `Gid` struct has
         // the same representation in memory as a bare `gid_t`. This is not
         // necessarily the case on all Rust platforms, though. See RFC 1785.
-        let ret = unsafe {
+        let ngroups = unsafe {
             libc::getgroups(groups.capacity() as c_int, groups.as_mut_ptr() as *mut gid_t)
         };
 
-        match Errno::result(ret) {
+        match Errno::result(ngroups) {
             Ok(s) => {
                 unsafe { groups.set_len(s as usize) };
                 return Ok(groups);
             },
             Err(Error::Sys(Errno::EINVAL)) => {
-                // EINVAL indicates that the buffer size was too small. Trigger
-                // the internal buffer resizing logic of `Vec` by requiring
-                // more space than the current capacity.
-                let cap = groups.capacity();
-                unsafe { groups.set_len(cap) };
-                groups.reserve(1);
+                // EINVAL indicates that the buffer size was too
+                // small, resize it up to ngroups_max as limit.
+                reserve_double_buffer_size(&mut groups, ngroups_max)
+                    .or(Err(Error::Sys(Errno::EINVAL)))?;
             },
             Err(e) => return Err(e)
         }
@@ -1174,11 +1461,9 @@ pub fn getgroups() -> Result<Vec<Gid>> {
 /// #     Ok(())
 /// # }
 /// #
-/// # fn main() {
-/// #     try_main().unwrap();
-/// # }
+/// # try_main().unwrap();
 /// ```
-#[cfg(not(any(target_os = "ios", target_os = "macos")))]
+#[cfg(not(any(target_os = "ios", target_os = "macos", target_os = "redox")))]
 pub fn setgroups(groups: &[Gid]) -> Result<()> {
     cfg_if! {
         if #[cfg(any(target_os = "dragonfly",
@@ -1199,7 +1484,7 @@ pub fn setgroups(groups: &[Gid]) -> Result<()> {
         libc::setgroups(groups.len() as setgroups_ngroups_t, groups.as_ptr() as *const gid_t)
     };
 
-    Errno::result(res).map(|_| ())
+    Errno::result(res).map(drop)
 }
 
 /// Calculate the supplementary group access list.
@@ -1222,15 +1507,14 @@ pub fn setgroups(groups: &[Gid]) -> Result<()> {
 /// and `setgroups()`. Additionally, while some implementations will return a
 /// partial list of groups when `NGROUPS_MAX` is exceeded, this implementation
 /// will only ever return the complete list or else an error.
-#[cfg(not(any(target_os = "ios", target_os = "macos")))]
+#[cfg(not(any(target_os = "ios", target_os = "macos", target_os = "redox")))]
 pub fn getgrouplist(user: &CStr, group: Gid) -> Result<Vec<Gid>> {
     let ngroups_max = match sysconf(SysconfVar::NGROUPS_MAX) {
         Ok(Some(n)) => n as c_int,
         Ok(None) | Err(_) => <c_int>::max_value(),
     };
     use std::cmp::min;
-    let mut ngroups = min(ngroups_max, 8);
-    let mut groups = Vec::<Gid>::with_capacity(ngroups as usize);
+    let mut groups = Vec::<Gid>::with_capacity(min(ngroups_max, 8) as usize);
     cfg_if! {
         if #[cfg(any(target_os = "ios", target_os = "macos"))] {
             type getgrouplist_group_t = c_int;
@@ -1240,6 +1524,7 @@ pub fn getgrouplist(user: &CStr, group: Gid) -> Result<Vec<Gid>> {
     }
     let gid: gid_t = group.into();
     loop {
+        let mut ngroups = groups.capacity() as i32;
         let ret = unsafe {
             libc::getgrouplist(user.as_ptr(),
                                gid as getgrouplist_group_t,
@@ -1256,19 +1541,8 @@ pub fn getgrouplist(user: &CStr, group: Gid) -> Result<Vec<Gid>> {
             // BSD systems will still fill the groups buffer with as many
             // groups as possible, but Linux manpages do not mention this
             // behavior.
-
-            let cap = groups.capacity();
-            if cap >= ngroups_max as usize {
-                // We already have the largest capacity we can, give up
-                return Err(Error::invalid_argument());
-            }
-
-            // Reserve space for at least ngroups
-            groups.reserve(ngroups as usize);
-
-            // Even if the buffer gets resized to bigger than ngroups_max,
-            // don't ever ask for more than ngroups_max groups
-            ngroups = min(ngroups_max, groups.capacity() as c_int);
+            reserve_double_buffer_size(&mut groups, ngroups_max as usize)
+                .or_else(|_| Err(Error::invalid_argument()))?;
         }
     }
 }
@@ -1309,11 +1583,9 @@ pub fn getgrouplist(user: &CStr, group: Gid) -> Result<Vec<Gid>> {
 /// #     Ok(())
 /// # }
 /// #
-/// # fn main() {
-/// #     try_main().unwrap();
-/// # }
+/// # try_main().unwrap();
 /// ```
-#[cfg(not(any(target_os = "ios", target_os = "macos")))]
+#[cfg(not(any(target_os = "ios", target_os = "macos", target_os = "redox")))]
 pub fn initgroups(user: &CStr, group: Gid) -> Result<()> {
     cfg_if! {
         if #[cfg(any(target_os = "ios", target_os = "macos"))] {
@@ -1325,13 +1597,14 @@ pub fn initgroups(user: &CStr, group: Gid) -> Result<()> {
     let gid: gid_t = group.into();
     let res = unsafe { libc::initgroups(user.as_ptr(), gid as initgroups_group_t) };
 
-    Errno::result(res).map(|_| ())
+    Errno::result(res).map(drop)
 }
 
 /// Suspend the thread until a signal is received.
 ///
 /// See also [pause(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/pause.html).
 #[inline]
+#[cfg(not(target_os = "redox"))]
 pub fn pause() {
     unsafe { libc::pause() };
 }
@@ -1362,7 +1635,8 @@ pub mod alarm {
     //!
     //! Scheduling an alarm and waiting for the signal:
     //!
-    //! ```
+#![cfg_attr(target_os = "redox", doc = " ```rust,ignore")]
+#![cfg_attr(not(target_os = "redox"), doc = " ```rust")]
     //! use std::time::{Duration, Instant};
     //!
     //! use nix::unistd::{alarm, pause};
@@ -1371,14 +1645,23 @@ pub mod alarm {
     //! // We need to setup an empty signal handler to catch the alarm signal,
     //! // otherwise the program will be terminated once the signal is delivered.
     //! extern fn signal_handler(_: nix::libc::c_int) { }
-    //! unsafe { sigaction(Signal::SIGALRM, &SigAction::new(SigHandler::Handler(signal_handler), SaFlags::empty(), SigSet::empty())); }
+    //! let sa = SigAction::new(
+    //!     SigHandler::Handler(signal_handler),
+    //!     SaFlags::empty(),
+    //!     SigSet::empty()
+    //! );
+    //! unsafe {
+    //!     sigaction(Signal::SIGALRM, &sa);
+    //! }
     //!
     //! // Set an alarm for 1 second from now.
     //! alarm::set(1);
     //!
     //! let start = Instant::now();
     //! // Pause the process until the alarm signal is received.
-    //! pause();
+    //! let mut sigset = SigSet::empty();
+    //! sigset.add(Signal::SIGALRM);
+    //! sigset.wait();
     //!
     //! assert!(start.elapsed() >= Duration::from_secs(1));
     //! ```
@@ -1386,8 +1669,6 @@ pub mod alarm {
     //! # References
     //!
     //! See also [alarm(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/alarm.html).
-
-    use libc;
 
     /// Schedule an alarm signal.
     ///
@@ -1424,6 +1705,31 @@ pub fn sleep(seconds: c_uint) -> c_uint {
     unsafe { libc::sleep(seconds) }
 }
 
+#[cfg(not(target_os = "redox"))]
+pub mod acct {
+    use crate::{Result, NixPath};
+    use crate::errno::Errno;
+    use std::ptr;
+
+    /// Enable process accounting
+    ///
+    /// See also [acct(2)](https://linux.die.net/man/2/acct)
+    pub fn enable<P: ?Sized + NixPath>(filename: &P) -> Result<()> {
+        let res = filename.with_nix_path(|cstr| {
+            unsafe { libc::acct(cstr.as_ptr()) }
+        })?;
+
+        Errno::result(res).map(drop)
+    }
+
+    /// Disable process accounting
+    pub fn disable() -> Result<()> {
+        let res = unsafe { libc::acct(ptr::null()) };
+
+        Errno::result(res).map(drop)
+    }
+}
+
 /// Creates a regular file which persists even after process termination
 ///
 /// * `template`: a path whose 6 rightmost characters must be X, e.g. `/tmp/tmpfile_XXXXXX`
@@ -1450,13 +1756,13 @@ pub fn sleep(seconds: c_uint) -> c_uint {
 /// ```
 #[inline]
 pub fn mkstemp<P: ?Sized + NixPath>(template: &P) -> Result<(RawFd, PathBuf)> {
-    let mut path = try!(template.with_nix_path(|path| {path.to_bytes_with_nul().to_owned()}));
+    let mut path = template.with_nix_path(|path| {path.to_bytes_with_nul().to_owned()})?;
     let p = path.as_mut_ptr() as *mut _;
     let fd = unsafe { libc::mkstemp(p) };
     let last = path.pop(); // drop the trailing nul
     debug_assert!(last == Some(b'\0'));
     let pathname = OsString::from_vec(path);
-    try!(Errno::result(fd));
+    Errno::result(fd)?;
     Ok((fd, PathBuf::from(pathname)))
 }
 
@@ -1480,7 +1786,7 @@ pub fn mkstemp<P: ?Sized + NixPath>(template: &P) -> Result<(RawFd, PathBuf)> {
 #[repr(i32)]
 pub enum PathconfVar {
     #[cfg(any(target_os = "dragonfly", target_os = "freebsd", target_os = "linux",
-              target_os = "netbsd", target_os = "openbsd"))]
+              target_os = "netbsd", target_os = "openbsd", target_os = "redox"))]
     /// Minimum number of bits needed to represent, as a signed integer value,
     /// the maximum size of a regular file allowed in the specified directory.
     FILESIZEBITS = libc::_PC_FILESIZEBITS,
@@ -1504,11 +1810,11 @@ pub enum PathconfVar {
     /// a pipe.
     PIPE_BUF = libc::_PC_PIPE_BUF,
     #[cfg(any(target_os = "android", target_os = "dragonfly", target_os = "linux",
-              target_os = "netbsd", target_os = "openbsd"))]
+              target_os = "netbsd", target_os = "openbsd", target_os = "redox"))]
     /// Symbolic links can be created.
     POSIX2_SYMLINKS = libc::_PC_2_SYMLINKS,
     #[cfg(any(target_os = "android", target_os = "dragonfly", target_os = "freebsd",
-              target_os = "linux", target_os = "openbsd"))]
+              target_os = "linux", target_os = "openbsd", target_os = "redox"))]
     /// Minimum number of bytes of storage actually allocated for any portion of
     /// a file.
     POSIX_ALLOC_SIZE_MIN = libc::_PC_ALLOC_SIZE_MIN,
@@ -1518,19 +1824,20 @@ pub enum PathconfVar {
     /// `POSIX_REC_MIN_XFER_SIZE` and `POSIX_REC_MAX_XFER_SIZE` values.
     POSIX_REC_INCR_XFER_SIZE = libc::_PC_REC_INCR_XFER_SIZE,
     #[cfg(any(target_os = "android", target_os = "dragonfly", target_os = "freebsd",
-              target_os = "linux", target_os = "openbsd"))]
+              target_os = "linux", target_os = "openbsd", target_os = "redox"))]
     /// Maximum recommended file transfer size.
     POSIX_REC_MAX_XFER_SIZE = libc::_PC_REC_MAX_XFER_SIZE,
     #[cfg(any(target_os = "android", target_os = "dragonfly", target_os = "freebsd",
-              target_os = "linux", target_os = "openbsd"))]
+              target_os = "linux", target_os = "openbsd", target_os = "redox"))]
     /// Minimum recommended file transfer size.
     POSIX_REC_MIN_XFER_SIZE = libc::_PC_REC_MIN_XFER_SIZE,
     #[cfg(any(target_os = "android", target_os = "dragonfly", target_os = "freebsd",
-              target_os = "linux", target_os = "openbsd"))]
+              target_os = "linux", target_os = "openbsd", target_os = "redox"))]
     ///  Recommended file transfer buffer alignment.
     POSIX_REC_XFER_ALIGN = libc::_PC_REC_XFER_ALIGN,
     #[cfg(any(target_os = "android", target_os = "dragonfly", target_os = "freebsd",
-              target_os = "linux", target_os = "netbsd", target_os = "openbsd"))]
+              target_os = "linux", target_os = "netbsd", target_os = "openbsd",
+              target_os = "redox"))]
     /// Maximum number of bytes in a symbolic link.
     SYMLINK_MAX = libc::_PC_SYMLINK_MAX,
     /// The use of `chown` and `fchown` is restricted to a process with
@@ -1544,17 +1851,18 @@ pub enum PathconfVar {
     /// disable terminal special character handling.
     _POSIX_VDISABLE = libc::_PC_VDISABLE,
     #[cfg(any(target_os = "android", target_os = "dragonfly", target_os = "freebsd",
-              target_os = "linux", target_os = "openbsd"))]
+              target_os = "linux", target_os = "openbsd", target_os = "redox"))]
     /// Asynchronous input or output operations may be performed for the
     /// associated file.
     _POSIX_ASYNC_IO = libc::_PC_ASYNC_IO,
     #[cfg(any(target_os = "android", target_os = "dragonfly", target_os = "freebsd",
-              target_os = "linux", target_os = "openbsd"))]
+              target_os = "linux", target_os = "openbsd", target_os = "redox"))]
     /// Prioritized input or output operations may be performed for the
     /// associated file.
     _POSIX_PRIO_IO = libc::_PC_PRIO_IO,
     #[cfg(any(target_os = "android", target_os = "dragonfly", target_os = "freebsd",
-              target_os = "linux", target_os = "netbsd", target_os = "openbsd"))]
+              target_os = "linux", target_os = "netbsd", target_os = "openbsd",
+              target_os = "redox"))]
     /// Synchronized input or output operations may be performed for the
     /// associated file.
     _POSIX_SYNC_IO = libc::_PC_SYNC_IO,
@@ -1617,12 +1925,12 @@ pub fn fpathconf(fd: RawFd, var: PathconfVar) -> Result<Option<c_long>> {
 ///     unsupported (for option variables)
 /// - `Err(x)`: an error occurred
 pub fn pathconf<P: ?Sized + NixPath>(path: &P, var: PathconfVar) -> Result<Option<c_long>> {
-    let raw = try!(path.with_nix_path(|cstr| {
+    let raw = path.with_nix_path(|cstr| {
         unsafe {
             Errno::clear();
             libc::pathconf(cstr.as_ptr(), var as c_int)
         }
-    }));
+    })?;
     if raw == -1 {
         if errno::errno() == 0 {
             Ok(None)
@@ -1655,9 +1963,11 @@ pub fn pathconf<P: ?Sized + NixPath>(path: &P, var: PathconfVar) -> Result<Optio
 pub enum SysconfVar {
     /// Maximum number of I/O operations in a single list I/O call supported by
     /// the implementation.
+    #[cfg(not(target_os = "redox"))]
     AIO_LISTIO_MAX = libc::_SC_AIO_LISTIO_MAX,
     /// Maximum number of outstanding asynchronous I/O operations supported by
     /// the implementation.
+    #[cfg(not(target_os = "redox"))]
     AIO_MAX = libc::_SC_AIO_MAX,
     #[cfg(any(target_os="android", target_os="dragonfly", target_os="freebsd",
               target_os = "ios", target_os="linux", target_os = "macos",
@@ -1668,25 +1978,34 @@ pub enum SysconfVar {
     /// Maximum length of argument to the exec functions including environment data.
     ARG_MAX = libc::_SC_ARG_MAX,
     /// Maximum number of functions that may be registered with `atexit`.
+    #[cfg(not(target_os = "redox"))]
     ATEXIT_MAX = libc::_SC_ATEXIT_MAX,
     /// Maximum obase values allowed by the bc utility.
+    #[cfg(not(target_os = "redox"))]
     BC_BASE_MAX = libc::_SC_BC_BASE_MAX,
     /// Maximum number of elements permitted in an array by the bc utility.
+    #[cfg(not(target_os = "redox"))]
     BC_DIM_MAX = libc::_SC_BC_DIM_MAX,
     /// Maximum scale value allowed by the bc utility.
+    #[cfg(not(target_os = "redox"))]
     BC_SCALE_MAX = libc::_SC_BC_SCALE_MAX,
     /// Maximum length of a string constant accepted by the bc utility.
+    #[cfg(not(target_os = "redox"))]
     BC_STRING_MAX = libc::_SC_BC_STRING_MAX,
     /// Maximum number of simultaneous processes per real user ID.
     CHILD_MAX = libc::_SC_CHILD_MAX,
-    // _SC_CLK_TCK is obsolete
+    // The number of clock ticks per second.
+    CLK_TCK = libc::_SC_CLK_TCK,
     /// Maximum number of weights that can be assigned to an entry of the
     /// LC_COLLATE order keyword in the locale definition file
+    #[cfg(not(target_os = "redox"))]
     COLL_WEIGHTS_MAX = libc::_SC_COLL_WEIGHTS_MAX,
     /// Maximum number of timer expiration overruns.
+    #[cfg(not(target_os = "redox"))]
     DELAYTIMER_MAX = libc::_SC_DELAYTIMER_MAX,
     /// Maximum number of expressions that can be nested within parentheses by
     /// the expr utility.
+    #[cfg(not(target_os = "redox"))]
     EXPR_NEST_MAX = libc::_SC_EXPR_NEST_MAX,
     #[cfg(any(target_os="dragonfly", target_os="freebsd", target_os = "ios",
               target_os="linux", target_os = "macos", target_os="netbsd",
@@ -1696,23 +2015,29 @@ pub enum SysconfVar {
     HOST_NAME_MAX = libc::_SC_HOST_NAME_MAX,
     /// Maximum number of iovec structures that one process has available for
     /// use with `readv` or `writev`.
+    #[cfg(not(target_os = "redox"))]
     IOV_MAX = libc::_SC_IOV_MAX,
     /// Unless otherwise noted, the maximum length, in bytes, of a utility's
     /// input line (either standard input or another file), when the utility is
     /// described as processing text files. The length includes room for the
     /// trailing <newline>.
+    #[cfg(not(target_os = "redox"))]
     LINE_MAX = libc::_SC_LINE_MAX,
     /// Maximum length of a login name.
     LOGIN_NAME_MAX = libc::_SC_LOGIN_NAME_MAX,
     /// Maximum number of simultaneous supplementary group IDs per process.
     NGROUPS_MAX = libc::_SC_NGROUPS_MAX,
     /// Initial size of `getgrgid_r` and `getgrnam_r` data buffers
+    #[cfg(not(target_os = "redox"))]
     GETGR_R_SIZE_MAX = libc::_SC_GETGR_R_SIZE_MAX,
     /// Initial size of `getpwuid_r` and `getpwnam_r` data buffers
+    #[cfg(not(target_os = "redox"))]
     GETPW_R_SIZE_MAX = libc::_SC_GETPW_R_SIZE_MAX,
     /// The maximum number of open message queue descriptors a process may hold.
+    #[cfg(not(target_os = "redox"))]
     MQ_OPEN_MAX = libc::_SC_MQ_OPEN_MAX,
     /// The maximum number of message priorities supported by the implementation.
+    #[cfg(not(target_os = "redox"))]
     MQ_PRIO_MAX = libc::_SC_MQ_PRIO_MAX,
     /// A value one greater than the maximum value that the system may assign to
     /// a newly-created file descriptor.
@@ -1727,6 +2052,7 @@ pub enum SysconfVar {
     /// The implementation supports barriers.
     _POSIX_BARRIERS = libc::_SC_BARRIERS,
     /// The implementation supports asynchronous input and output.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_ASYNCHRONOUS_IO = libc::_SC_ASYNCHRONOUS_IO,
     #[cfg(any(target_os="dragonfly", target_os="freebsd", target_os = "ios",
               target_os="linux", target_os = "macos", target_os="netbsd",
@@ -1739,24 +2065,32 @@ pub enum SysconfVar {
     /// The implementation supports the Process CPU-Time Clocks option.
     _POSIX_CPUTIME = libc::_SC_CPUTIME,
     /// The implementation supports the File Synchronization option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_FSYNC = libc::_SC_FSYNC,
     #[cfg(any(target_os="dragonfly", target_os="freebsd", target_os = "ios",
               target_os="linux", target_os = "macos", target_os="openbsd"))]
     /// The implementation supports the IPv6 option.
     _POSIX_IPV6 = libc::_SC_IPV6,
     /// The implementation supports job control.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_JOB_CONTROL = libc::_SC_JOB_CONTROL,
     /// The implementation supports memory mapped Files.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_MAPPED_FILES = libc::_SC_MAPPED_FILES,
     /// The implementation supports the Process Memory Locking option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_MEMLOCK = libc::_SC_MEMLOCK,
     /// The implementation supports the Range Memory Locking option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_MEMLOCK_RANGE = libc::_SC_MEMLOCK_RANGE,
     /// The implementation supports memory protection.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_MEMORY_PROTECTION = libc::_SC_MEMORY_PROTECTION,
     /// The implementation supports the Message Passing option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_MESSAGE_PASSING = libc::_SC_MESSAGE_PASSING,
     /// The implementation supports the Monotonic Clock option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_MONOTONIC_CLOCK = libc::_SC_MONOTONIC_CLOCK,
     #[cfg(any(target_os="android", target_os="dragonfly", target_os="freebsd",
               target_os = "ios", target_os="linux", target_os = "macos",
@@ -1764,6 +2098,7 @@ pub enum SysconfVar {
     /// The implementation supports the Prioritized Input and Output option.
     _POSIX_PRIORITIZED_IO = libc::_SC_PRIORITIZED_IO,
     /// The implementation supports the Process Scheduling option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_PRIORITY_SCHEDULING = libc::_SC_PRIORITY_SCHEDULING,
     #[cfg(any(target_os="dragonfly", target_os="freebsd", target_os = "ios",
               target_os="linux", target_os = "macos", target_os="openbsd"))]
@@ -1785,10 +2120,13 @@ pub enum SysconfVar {
     /// The implementation supports the Regular Expression Handling option.
     _POSIX_REGEXP = libc::_SC_REGEXP,
     /// Each process has a saved set-user-ID and a saved set-group-ID.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_SAVED_IDS = libc::_SC_SAVED_IDS,
     /// The implementation supports semaphores.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_SEMAPHORES = libc::_SC_SEMAPHORES,
     /// The implementation supports the Shared Memory Objects option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_SHARED_MEMORY_OBJECTS = libc::_SC_SHARED_MEMORY_OBJECTS,
     #[cfg(any(target_os="dragonfly", target_os="freebsd", target_os = "ios",
               target_os="linux", target_os = "macos", target_os="netbsd",
@@ -1813,10 +2151,13 @@ pub enum SysconfVar {
               target_os="openbsd"))]
     _POSIX_SS_REPL_MAX = libc::_SC_SS_REPL_MAX,
     /// The implementation supports the Synchronized Input and Output option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_SYNCHRONIZED_IO = libc::_SC_SYNCHRONIZED_IO,
     /// The implementation supports the Thread Stack Address Attribute option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_THREAD_ATTR_STACKADDR = libc::_SC_THREAD_ATTR_STACKADDR,
     /// The implementation supports the Thread Stack Size Attribute option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_THREAD_ATTR_STACKSIZE = libc::_SC_THREAD_ATTR_STACKSIZE,
     #[cfg(any(target_os = "ios", target_os="linux", target_os = "macos",
               target_os="netbsd", target_os="openbsd"))]
@@ -1824,10 +2165,13 @@ pub enum SysconfVar {
     _POSIX_THREAD_CPUTIME = libc::_SC_THREAD_CPUTIME,
     /// The implementation supports the Non-Robust Mutex Priority Inheritance
     /// option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_THREAD_PRIO_INHERIT = libc::_SC_THREAD_PRIO_INHERIT,
     /// The implementation supports the Non-Robust Mutex Priority Protection option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_THREAD_PRIO_PROTECT = libc::_SC_THREAD_PRIO_PROTECT,
     /// The implementation supports the Thread Execution Scheduling option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_THREAD_PRIORITY_SCHEDULING = libc::_SC_THREAD_PRIORITY_SCHEDULING,
     #[cfg(any(target_os="dragonfly", target_os="freebsd", target_os = "ios",
               target_os="linux", target_os = "macos", target_os="netbsd",
@@ -1842,18 +2186,21 @@ pub enum SysconfVar {
     /// The implementation supports the Robust Mutex Priority Protection option.
     _POSIX_THREAD_ROBUST_PRIO_PROTECT = libc::_SC_THREAD_ROBUST_PRIO_PROTECT,
     /// The implementation supports thread-safe functions.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_THREAD_SAFE_FUNCTIONS = libc::_SC_THREAD_SAFE_FUNCTIONS,
     #[cfg(any(target_os="dragonfly", target_os="freebsd", target_os = "ios",
               target_os="linux", target_os = "macos", target_os="openbsd"))]
     /// The implementation supports the Thread Sporadic Server option.
     _POSIX_THREAD_SPORADIC_SERVER = libc::_SC_THREAD_SPORADIC_SERVER,
     /// The implementation supports threads.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_THREADS = libc::_SC_THREADS,
     #[cfg(any(target_os="dragonfly", target_os="freebsd", target_os = "ios",
               target_os="linux", target_os = "macos", target_os="openbsd"))]
     /// The implementation supports timeouts.
     _POSIX_TIMEOUTS = libc::_SC_TIMEOUTS,
     /// The implementation supports timers.
+    #[cfg(not(target_os = "redox"))]
     _POSIX_TIMERS = libc::_SC_TIMERS,
     #[cfg(any(target_os="dragonfly", target_os="freebsd", target_os = "ios",
               target_os="linux", target_os = "macos", target_os="openbsd"))]
@@ -1918,17 +2265,23 @@ pub enum SysconfVar {
     /// using at least 64 bits.
     _POSIX_V6_LPBIG_OFFBIG = libc::_SC_V6_LPBIG_OFFBIG,
     /// The implementation supports the C-Language Binding option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX2_C_BIND = libc::_SC_2_C_BIND,
     /// The implementation supports the C-Language Development Utilities option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX2_C_DEV = libc::_SC_2_C_DEV,
     /// The implementation supports the Terminal Characteristics option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX2_CHAR_TERM = libc::_SC_2_CHAR_TERM,
     /// The implementation supports the FORTRAN Development Utilities option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX2_FORT_DEV = libc::_SC_2_FORT_DEV,
     /// The implementation supports the FORTRAN Runtime Utilities option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX2_FORT_RUN = libc::_SC_2_FORT_RUN,
     /// The implementation supports the creation of locales by the localedef
     /// utility.
+    #[cfg(not(target_os = "redox"))]
     _POSIX2_LOCALEDEF = libc::_SC_2_LOCALEDEF,
     #[cfg(any(target_os="dragonfly", target_os="freebsd", target_os = "ios",
               target_os="linux", target_os = "macos", target_os="netbsd",
@@ -1962,26 +2315,34 @@ pub enum SysconfVar {
     /// The implementation supports the Track Batch Job Request option.
     _POSIX2_PBS_TRACK = libc::_SC_2_PBS_TRACK,
     /// The implementation supports the Software Development Utilities option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX2_SW_DEV = libc::_SC_2_SW_DEV,
     /// The implementation supports the User Portability Utilities option.
+    #[cfg(not(target_os = "redox"))]
     _POSIX2_UPE = libc::_SC_2_UPE,
     /// Integer value indicating version of the Shell and Utilities volume of
     /// POSIX.1 to which the implementation conforms.
+    #[cfg(not(target_os = "redox"))]
     _POSIX2_VERSION = libc::_SC_2_VERSION,
     /// The size of a system page in bytes.
     ///
     /// POSIX also defines an alias named `PAGESIZE`, but Rust does not allow two
     /// enum constants to have the same value, so nix omits `PAGESIZE`.
     PAGE_SIZE = libc::_SC_PAGE_SIZE,
+    #[cfg(not(target_os = "redox"))]
     PTHREAD_DESTRUCTOR_ITERATIONS = libc::_SC_THREAD_DESTRUCTOR_ITERATIONS,
+    #[cfg(not(target_os = "redox"))]
     PTHREAD_KEYS_MAX = libc::_SC_THREAD_KEYS_MAX,
+    #[cfg(not(target_os = "redox"))]
     PTHREAD_STACK_MIN = libc::_SC_THREAD_STACK_MIN,
+    #[cfg(not(target_os = "redox"))]
     PTHREAD_THREADS_MAX = libc::_SC_THREAD_THREADS_MAX,
     RE_DUP_MAX = libc::_SC_RE_DUP_MAX,
     #[cfg(any(target_os="android", target_os="dragonfly", target_os="freebsd",
               target_os = "ios", target_os="linux", target_os = "macos",
               target_os="openbsd"))]
     RTSIG_MAX = libc::_SC_RTSIG_MAX,
+    #[cfg(not(target_os = "redox"))]
     SEM_NSEMS_MAX = libc::_SC_SEM_NSEMS_MAX,
     #[cfg(any(target_os="android", target_os="dragonfly", target_os="freebsd",
               target_os = "ios", target_os="linux", target_os = "macos",
@@ -1996,6 +2357,7 @@ pub enum SysconfVar {
               target_os="linux", target_os = "macos", target_os="netbsd",
               target_os="openbsd"))]
     SYMLOOP_MAX = libc::_SC_SYMLOOP_MAX,
+    #[cfg(not(target_os = "redox"))]
     TIMER_MAX = libc::_SC_TIMER_MAX,
     TTY_NAME_MAX = libc::_SC_TTY_NAME_MAX,
     TZNAME_MAX = libc::_SC_TZNAME_MAX,
@@ -2026,6 +2388,7 @@ pub enum SysconfVar {
     _XOPEN_REALTIME_THREADS = libc::_SC_XOPEN_REALTIME_THREADS,
     /// The implementation supports the Issue 4, Version 2 Shared Memory Option
     /// Group.
+    #[cfg(not(target_os = "redox"))]
     _XOPEN_SHM = libc::_SC_XOPEN_SHM,
     #[cfg(any(target_os="dragonfly", target_os="freebsd", target_os = "ios",
               target_os="linux", target_os = "macos", target_os="openbsd"))]
@@ -2078,19 +2441,18 @@ pub fn sysconf(var: SysconfVar) -> Result<Option<c_long>> {
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
 mod pivot_root {
-    use libc;
-    use {Result, NixPath};
-    use errno::Errno;
+    use crate::{Result, NixPath};
+    use crate::errno::Errno;
 
     pub fn pivot_root<P1: ?Sized + NixPath, P2: ?Sized + NixPath>(
             new_root: &P1, put_old: &P2) -> Result<()> {
-        let res = try!(try!(new_root.with_nix_path(|new_root| {
+        let res = new_root.with_nix_path(|new_root| {
             put_old.with_nix_path(|put_old| {
                 unsafe {
                     libc::syscall(libc::SYS_pivot_root, new_root.as_ptr(), put_old.as_ptr())
                 }
             })
-        })));
+        })??;
 
         Errno::result(res).map(drop)
     }
@@ -2099,9 +2461,8 @@ mod pivot_root {
 #[cfg(any(target_os = "android", target_os = "freebsd",
           target_os = "linux", target_os = "openbsd"))]
 mod setres {
-    use libc;
-    use Result;
-    use errno::Errno;
+    use crate::Result;
+    use crate::errno::Errno;
     use super::{Uid, Gid};
 
     /// Sets the real, effective, and saved uid.
@@ -2123,9 +2484,9 @@ mod setres {
     /// Sets the real, effective, and saved gid.
     /// ([see setresuid(2)](http://man7.org/linux/man-pages/man2/setresuid.2.html))
     ///
-    /// * `rgid`: real user id
-    /// * `egid`: effective user id
-    /// * `sgid`: saved user id
+    /// * `rgid`: real group id
+    /// * `egid`: effective group id
+    /// * `sgid`: saved group id
     /// * returns: Ok or libc error code.
     ///
     /// Err is returned if the user doesn't have permission to set this GID.
@@ -2135,4 +2496,334 @@ mod setres {
 
         Errno::result(res).map(drop)
     }
+}
+
+libc_bitflags!{
+    /// Options for access()
+    pub struct AccessFlags : c_int {
+        /// Test for existence of file.
+        F_OK;
+        /// Test for read permission.
+        R_OK;
+        /// Test for write permission.
+        W_OK;
+        /// Test for execute (search) permission.
+        X_OK;
+    }
+}
+
+/// Checks the file named by `path` for accessibility according to the flags given by `amode`
+/// See [access(2)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/access.html)
+pub fn access<P: ?Sized + NixPath>(path: &P, amode: AccessFlags) -> Result<()> {
+    let res = path.with_nix_path(|cstr| {
+        unsafe {
+            libc::access(cstr.as_ptr(), amode.bits)
+        }
+    })?;
+    Errno::result(res).map(drop)
+}
+
+/// Representation of a User, based on `libc::passwd`
+///
+/// The reason some fields in this struct are `String` and others are `CString` is because some
+/// fields are based on the user's locale, which could be non-UTF8, while other fields are
+/// guaranteed to conform to [`NAME_REGEX`](https://serverfault.com/a/73101/407341), which only
+/// contains ASCII.
+#[cfg(not(target_os = "redox"))] // RedoxFS does not support passwd
+#[derive(Debug, Clone, PartialEq)]
+pub struct User {
+    /// Username
+    pub name: String,
+    /// User password (probably encrypted)
+    pub passwd: CString,
+    /// User ID
+    pub uid: Uid,
+    /// Group ID
+    pub gid: Gid,
+    /// User information
+    #[cfg(not(target_os = "android"))]
+    pub gecos: CString,
+    /// Home directory
+    pub dir: PathBuf,
+    /// Path to shell
+    pub shell: PathBuf,
+    /// Login class
+    #[cfg(not(any(target_os = "android", target_os = "fuchsia",
+                  target_os = "linux")))]
+    pub class: CString,
+    /// Last password change
+    #[cfg(not(any(target_os = "android", target_os = "fuchsia",
+                  target_os = "linux")))]
+    pub change: libc::time_t,
+    /// Expiration time of account
+    #[cfg(not(any(target_os = "android", target_os = "fuchsia",
+                  target_os = "linux")))]
+    pub expire: libc::time_t
+}
+
+#[cfg(not(target_os = "redox"))] // RedoxFS does not support passwd
+impl From<&libc::passwd> for User {
+    fn from(pw: &libc::passwd) -> User {
+        unsafe {
+            User {
+                name: CStr::from_ptr((*pw).pw_name).to_string_lossy().into_owned(),
+                passwd: CString::new(CStr::from_ptr((*pw).pw_passwd).to_bytes()).unwrap(),
+                #[cfg(not(target_os = "android"))]
+                gecos: CString::new(CStr::from_ptr((*pw).pw_gecos).to_bytes()).unwrap(),
+                dir: PathBuf::from(OsStr::from_bytes(CStr::from_ptr((*pw).pw_dir).to_bytes())),
+                shell: PathBuf::from(OsStr::from_bytes(CStr::from_ptr((*pw).pw_shell).to_bytes())),
+                uid: Uid::from_raw((*pw).pw_uid),
+                gid: Gid::from_raw((*pw).pw_gid),
+                #[cfg(not(any(target_os = "android", target_os = "fuchsia",
+                              target_os = "linux")))]
+                class: CString::new(CStr::from_ptr((*pw).pw_class).to_bytes()).unwrap(),
+                #[cfg(not(any(target_os = "android", target_os = "fuchsia",
+                              target_os = "linux")))]
+                change: (*pw).pw_change,
+                #[cfg(not(any(target_os = "android", target_os = "fuchsia",
+                              target_os = "linux")))]
+                expire: (*pw).pw_expire
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "redox"))] // RedoxFS does not support passwd
+impl User {
+    fn from_anything<F>(f: F) -> Result<Option<Self>>
+    where
+        F: Fn(*mut libc::passwd,
+              *mut libc::c_char,
+              libc::size_t,
+              *mut *mut libc::passwd) -> libc::c_int
+    {
+        let buflimit = 16384;
+        let bufsize = match sysconf(SysconfVar::GETPW_R_SIZE_MAX) {
+            Ok(Some(n)) => n as usize,
+            Ok(None) | Err(_) => buflimit as usize,
+        };
+
+        let mut cbuf = Vec::with_capacity(bufsize);
+        let mut pwd = mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut res = ptr::null_mut();
+
+        loop {
+            let error = f(pwd.as_mut_ptr(), cbuf.as_mut_ptr(), cbuf.capacity(), &mut res);
+            if error == 0 {
+                if res.is_null() {
+                    return Ok(None);
+                } else {
+                    let pwd = unsafe { pwd.assume_init() };
+                    return Ok(Some(User::from(&pwd)));
+                }
+            } else if Errno::last() == Errno::ERANGE {
+                // Trigger the internal buffer resizing logic.
+                reserve_double_buffer_size(&mut cbuf, buflimit)?;
+            } else {
+                return Err(Error::Sys(Errno::last()));
+            }
+        }
+    }
+
+    /// Get a user by UID.
+    ///
+    /// Internally, this function calls
+    /// [getpwuid_r(3)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/getpwuid_r.html)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nix::unistd::{Uid, User};
+    /// // Returns an Result<Option<User>>, thus the double unwrap.
+    /// let res = User::from_uid(Uid::from_raw(0)).unwrap().unwrap();
+    /// assert!(res.name == "root");
+    /// ```
+    pub fn from_uid(uid: Uid) -> Result<Option<Self>> {
+        User::from_anything(|pwd, cbuf, cap, res| {
+            unsafe { libc::getpwuid_r(uid.0, pwd, cbuf, cap, res) }
+        })
+    }
+
+    /// Get a user by name.
+    ///
+    /// Internally, this function calls
+    /// [getpwnam_r(3)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/getpwuid_r.html)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nix::unistd::User;
+    /// // Returns an Result<Option<User>>, thus the double unwrap.
+    /// let res = User::from_name("root").unwrap().unwrap();
+    /// assert!(res.name == "root");
+    /// ```
+    pub fn from_name(name: &str) -> Result<Option<Self>> {
+        let name = CString::new(name).unwrap();
+        User::from_anything(|pwd, cbuf, cap, res| {
+            unsafe { libc::getpwnam_r(name.as_ptr(), pwd, cbuf, cap, res) }
+        })
+    }
+}
+
+/// Representation of a Group, based on `libc::group`
+#[cfg(not(target_os = "redox"))] // RedoxFS does not support passwd
+#[derive(Debug, Clone, PartialEq)]
+pub struct Group {
+    /// Group name
+    pub name: String,
+    /// Group password
+    pub passwd: CString,
+    /// Group ID
+    pub gid: Gid,
+    /// List of Group members
+    pub mem: Vec<String>
+}
+
+#[cfg(not(target_os = "redox"))] // RedoxFS does not support passwd
+impl From<&libc::group> for Group {
+    fn from(gr: &libc::group) -> Group {
+        unsafe {
+            Group {
+                name: CStr::from_ptr((*gr).gr_name).to_string_lossy().into_owned(),
+                passwd: CString::new(CStr::from_ptr((*gr).gr_passwd).to_bytes()).unwrap(),
+                gid: Gid::from_raw((*gr).gr_gid),
+                mem: Group::members((*gr).gr_mem)
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "redox"))] // RedoxFS does not support passwd
+impl Group {
+    unsafe fn members(mem: *mut *mut c_char) -> Vec<String> {
+        let mut ret = Vec::new();
+
+        for i in 0.. {
+            let u = mem.offset(i);
+            if (*u).is_null() {
+                break;
+            } else {
+                let s = CStr::from_ptr(*u).to_string_lossy().into_owned();
+                ret.push(s);
+            }
+        }
+
+        ret
+    }
+
+    fn from_anything<F>(f: F) -> Result<Option<Self>>
+    where
+        F: Fn(*mut libc::group,
+              *mut libc::c_char,
+              libc::size_t,
+              *mut *mut libc::group) -> libc::c_int
+    {
+        let buflimit = 16384;
+        let bufsize = match sysconf(SysconfVar::GETGR_R_SIZE_MAX) {
+            Ok(Some(n)) => n as usize,
+            Ok(None) | Err(_) => buflimit as usize,
+        };
+
+        let mut cbuf = Vec::with_capacity(bufsize);
+        let mut grp = mem::MaybeUninit::<libc::group>::uninit();
+        let mut res = ptr::null_mut();
+
+        loop {
+            let error = f(grp.as_mut_ptr(), cbuf.as_mut_ptr(), cbuf.capacity(), &mut res);
+            if error == 0 {
+                if res.is_null() {
+                    return Ok(None);
+                } else {
+                    let grp = unsafe { grp.assume_init() };
+                    return Ok(Some(Group::from(&grp)));
+                }
+            } else if Errno::last() == Errno::ERANGE {
+                // Trigger the internal buffer resizing logic.
+                reserve_double_buffer_size(&mut cbuf, buflimit)?;
+            } else {
+                return Err(Error::Sys(Errno::last()));
+            }
+        }
+    }
+
+    /// Get a group by GID.
+    ///
+    /// Internally, this function calls
+    /// [getgrgid_r(3)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/getpwuid_r.html)
+    ///
+    /// # Examples
+    ///
+    // Disable this test on all OS except Linux as root group may not exist.
+    #[cfg_attr(not(target_os = "linux"), doc = " ```no_run")]
+    #[cfg_attr(target_os = "linux", doc = " ```")]
+    /// use nix::unistd::{Gid, Group};
+    /// // Returns an Result<Option<Group>>, thus the double unwrap.
+    /// let res = Group::from_gid(Gid::from_raw(0)).unwrap().unwrap();
+    /// assert!(res.name == "root");
+    /// ```
+    pub fn from_gid(gid: Gid) -> Result<Option<Self>> {
+        Group::from_anything(|grp, cbuf, cap, res| {
+            unsafe { libc::getgrgid_r(gid.0, grp, cbuf, cap, res) }
+        })
+    }
+
+    /// Get a group by name.
+    ///
+    /// Internally, this function calls
+    /// [getgrnam_r(3)](http://pubs.opengroup.org/onlinepubs/9699919799/functions/getpwuid_r.html)
+    ///
+    /// # Examples
+    ///
+    // Disable this test on all OS except Linux as root group may not exist.
+    #[cfg_attr(not(target_os = "linux"), doc = " ```no_run")]
+    #[cfg_attr(target_os = "linux", doc = " ```")]
+    /// use nix::unistd::Group;
+    /// // Returns an Result<Option<Group>>, thus the double unwrap.
+    /// let res = Group::from_name("root").unwrap().unwrap();
+    /// assert!(res.name == "root");
+    /// ```
+    pub fn from_name(name: &str) -> Result<Option<Self>> {
+        let name = CString::new(name).unwrap();
+        Group::from_anything(|grp, cbuf, cap, res| {
+            unsafe { libc::getgrnam_r(name.as_ptr(), grp, cbuf, cap, res) }
+        })
+    }
+}
+
+/// Get the name of the terminal device that is open on file descriptor fd
+/// (see [`ttyname(3)`](http://man7.org/linux/man-pages/man3/ttyname.3.html)).
+#[cfg(not(target_os = "fuchsia"))]
+pub fn ttyname(fd: RawFd) -> Result<PathBuf> {
+    const PATH_MAX: usize = libc::PATH_MAX as usize;
+    let mut buf = vec![0_u8; PATH_MAX];
+    let c_buf = buf.as_mut_ptr() as *mut libc::c_char;
+
+    let ret = unsafe { libc::ttyname_r(fd, c_buf, buf.len()) };
+    if ret != 0 {
+        return Err(Error::Sys(Errno::from_i32(ret)));
+    }
+
+    let nul = buf.iter().position(|c| *c == b'\0').unwrap();
+    buf.truncate(nul);
+    Ok(OsString::from_vec(buf).into())
+}
+
+/// Get the effective user ID and group ID associated with a Unix domain socket.
+///
+/// See also [getpeereid(3)](https://www.freebsd.org/cgi/man.cgi?query=getpeereid)
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+))]
+pub fn getpeereid(fd: RawFd) -> Result<(Uid, Gid)> {
+    let mut uid = 1;
+    let mut gid = 1;
+
+    let ret = unsafe { libc::getpeereid(fd, &mut uid, &mut gid) };
+
+    Errno::result(ret).map(|_| (Uid(uid), Gid(gid)))
 }

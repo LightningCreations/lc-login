@@ -1,6 +1,6 @@
 use libc::{self, c_ulong, c_int};
-use {Result, NixPath};
-use errno::Errno;
+use crate::{Result, NixPath};
+use crate::errno::Errno;
 
 libc_bitflags!(
     pub struct MsFlags: c_ulong {
@@ -61,38 +61,49 @@ pub fn mount<P1: ?Sized + NixPath, P2: ?Sized + NixPath, P3: ?Sized + NixPath, P
         flags: MsFlags,
         data: Option<&P4>) -> Result<()> {
 
-    let res = try!(try!(try!(try!(
-        source.with_nix_path(|source| {
-            target.with_nix_path(|target| {
-                fstype.with_nix_path(|fstype| {
-                    data.with_nix_path(|data| {
-                        unsafe {
-                            libc::mount(source.as_ptr(),
-                                       target.as_ptr(),
-                                       fstype.as_ptr(),
-                                       flags.bits,
-                                       data.as_ptr() as *const libc::c_void)
-                        }
-                    })
+    fn with_opt_nix_path<P, T, F>(p: Option<&P>, f: F) -> Result<T>
+        where P: ?Sized + NixPath,
+              F: FnOnce(*const libc::c_char) -> T
+    {
+        match p {
+            Some(path) => path.with_nix_path(|p_str| f(p_str.as_ptr())),
+            None => Ok(f(std::ptr::null()))
+        }
+    }
+
+    let res = with_opt_nix_path(source, |s| {
+        target.with_nix_path(|t| {
+            with_opt_nix_path(fstype, |ty| {
+                with_opt_nix_path(data, |d| {
+                    unsafe {
+                        libc::mount(
+                            s,
+                            t.as_ptr(),
+                            ty,
+                            flags.bits,
+                            d as *const libc::c_void
+                        )
+                    }
                 })
             })
-        })))));
+        })
+    })????;
 
     Errno::result(res).map(drop)
 }
 
 pub fn umount<P: ?Sized + NixPath>(target: &P) -> Result<()> {
-    let res = try!(target.with_nix_path(|cstr| {
+    let res = target.with_nix_path(|cstr| {
         unsafe { libc::umount(cstr.as_ptr()) }
-    }));
+    })?;
 
     Errno::result(res).map(drop)
 }
 
 pub fn umount2<P: ?Sized + NixPath>(target: &P, flags: MntFlags) -> Result<()> {
-    let res = try!(target.with_nix_path(|cstr| {
+    let res = target.with_nix_path(|cstr| {
         unsafe { libc::umount2(cstr.as_ptr(), flags.bits) }
-    }));
+    })?;
 
     Errno::result(res).map(drop)
 }

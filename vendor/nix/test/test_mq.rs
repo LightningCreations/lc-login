@@ -1,17 +1,15 @@
-use libc::c_long;
-
 use std::ffi::CString;
 use std::str;
 
 use nix::errno::Errno::*;
 use nix::Error::Sys;
-use nix::mqueue::{mq_open, mq_close, mq_send, mq_receive, mq_getattr, mq_setattr, mq_unlink, mq_set_nonblock, mq_remove_nonblock};
+use nix::mqueue::{mq_open, mq_close, mq_send, mq_receive, mq_attr_member_t};
 use nix::mqueue::{MqAttr, MQ_OFlag};
 use nix::sys::stat::Mode;
 
 #[test]
 fn test_mq_send_and_receive() {
-    const MSG_SIZE: c_long =  32;
+    const MSG_SIZE: mq_attr_member_t = 32;
     let attr =  MqAttr::new(0, 10, MSG_SIZE, 0);
     let mq_name= &CString::new(b"/a_nix_test_queue".as_ref()).unwrap();
 
@@ -31,7 +29,7 @@ fn test_mq_send_and_receive() {
     let mut buf = [0u8; 32];
     let mut prio = 0u32;
     let len = mq_receive(mqd1, &mut buf, &mut prio).unwrap();
-    assert!(prio == 1);
+    assert_eq!(prio, 1);
 
     mq_close(mqd1).unwrap();
     mq_close(mqd0).unwrap();
@@ -40,8 +38,10 @@ fn test_mq_send_and_receive() {
 
 
 #[test]
+#[cfg(not(any(target_os = "netbsd")))]
 fn test_mq_getattr() {
-    const MSG_SIZE: c_long =  32;
+    use nix::mqueue::mq_getattr;
+    const MSG_SIZE: mq_attr_member_t = 32;
     let initial_attr =  MqAttr::new(0, 10, MSG_SIZE, 0);
     let mq_name = &CString::new(b"/attr_test_get_attr".as_ref()).unwrap();
     let oflag = MQ_OFlag::O_CREAT | MQ_OFlag::O_WRONLY;
@@ -53,16 +53,18 @@ fn test_mq_getattr() {
     };
     let mqd = r.unwrap();
 
-    let read_attr = mq_getattr(mqd);
-    assert!(read_attr.unwrap() == initial_attr);
+    let read_attr = mq_getattr(mqd).unwrap();
+    assert_eq!(read_attr, initial_attr);
     mq_close(mqd).unwrap();
 }
 
 // FIXME: Fix failures for mips in QEMU
 #[test]
+#[cfg(not(any(target_os = "netbsd")))]
 #[cfg_attr(any(target_arch = "mips", target_arch = "mips64"), ignore)]
 fn test_mq_setattr() {
-    const MSG_SIZE: c_long =  32;
+    use nix::mqueue::{mq_getattr, mq_setattr};
+    const MSG_SIZE: mq_attr_member_t = 32;
     let initial_attr =  MqAttr::new(0, 10, MSG_SIZE, 0);
     let mq_name = &CString::new(b"/attr_test_get_attr".as_ref()).unwrap();
     let oflag = MQ_OFlag::O_CREAT | MQ_OFlag::O_WRONLY;
@@ -75,29 +77,31 @@ fn test_mq_setattr() {
     let mqd = r.unwrap();
 
     let new_attr =  MqAttr::new(0, 20, MSG_SIZE * 2, 100);
-    let old_attr = mq_setattr(mqd, &new_attr);
-    assert!(old_attr.unwrap() == initial_attr);
+    let old_attr = mq_setattr(mqd, &new_attr).unwrap();
+    assert_eq!(old_attr, initial_attr);
 
-    let new_attr_get = mq_getattr(mqd);
+    let new_attr_get = mq_getattr(mqd).unwrap();
     // The following tests make sense. No changes here because according to the Linux man page only
     // O_NONBLOCK can be set (see tests below)
-    assert!(new_attr_get.unwrap() != new_attr);
+    assert_ne!(new_attr_get, new_attr);
 
-    let new_attr_non_blocking =  MqAttr::new(MQ_OFlag::O_NONBLOCK.bits() as c_long, 10, MSG_SIZE, 0);
+    let new_attr_non_blocking =  MqAttr::new(MQ_OFlag::O_NONBLOCK.bits() as mq_attr_member_t, 10, MSG_SIZE, 0);
     mq_setattr(mqd, &new_attr_non_blocking).unwrap();
-    let new_attr_get = mq_getattr(mqd);
+    let new_attr_get = mq_getattr(mqd).unwrap();
 
     // now the O_NONBLOCK flag has been set
-    assert!(new_attr_get.unwrap() != initial_attr);
-    assert!(new_attr_get.unwrap() == new_attr_non_blocking);
+    assert_ne!(new_attr_get, initial_attr);
+    assert_eq!(new_attr_get, new_attr_non_blocking);
     mq_close(mqd).unwrap();
 }
 
 // FIXME: Fix failures for mips in QEMU
 #[test]
+#[cfg(not(any(target_os = "netbsd")))]
 #[cfg_attr(any(target_arch = "mips", target_arch = "mips64"), ignore)]
 fn test_mq_set_nonblocking() {
-    const MSG_SIZE: c_long =  32;
+    use nix::mqueue::{mq_getattr, mq_set_nonblock, mq_remove_nonblock};
+    const MSG_SIZE: mq_attr_member_t = 32;
     let initial_attr =  MqAttr::new(0, 10, MSG_SIZE, 0);
     let mq_name = &CString::new(b"/attr_test_get_attr".as_ref()).unwrap();
     let oflag = MQ_OFlag::O_CREAT | MQ_OFlag::O_WRONLY;
@@ -110,16 +114,18 @@ fn test_mq_set_nonblocking() {
     let mqd = r.unwrap();
     mq_set_nonblock(mqd).unwrap();
     let new_attr = mq_getattr(mqd);
-    assert!(new_attr.unwrap().flags() == MQ_OFlag::O_NONBLOCK.bits() as c_long);
+    assert_eq!(new_attr.unwrap().flags(), MQ_OFlag::O_NONBLOCK.bits() as mq_attr_member_t);
     mq_remove_nonblock(mqd).unwrap();
     let new_attr = mq_getattr(mqd);
-    assert!(new_attr.unwrap().flags() == 0);
+    assert_eq!(new_attr.unwrap().flags(), 0);
     mq_close(mqd).unwrap();
 }
 
 #[test]
+#[cfg(not(any(target_os = "netbsd")))]
 fn test_mq_unlink() {
-    const MSG_SIZE: c_long =  32;
+    use nix::mqueue::mq_unlink;
+    const MSG_SIZE: mq_attr_member_t = 32;
     let initial_attr =  MqAttr::new(0, 10, MSG_SIZE, 0);
     let mq_name_opened = &CString::new(b"/mq_unlink_test".as_ref()).unwrap();
     let mq_name_not_opened = &CString::new(b"/mq_unlink_test".as_ref()).unwrap();
@@ -133,12 +139,12 @@ fn test_mq_unlink() {
     let mqd = r.unwrap();
 
     let res_unlink = mq_unlink(mq_name_opened);
-    assert!(res_unlink == Ok(()) );
+    assert_eq!(res_unlink, Ok(()) );
 
     let res_unlink_not_opened = mq_unlink(mq_name_not_opened);
-    assert!(res_unlink_not_opened == Err(Sys(ENOENT)) );
+    assert_eq!(res_unlink_not_opened, Err(Sys(ENOENT)) );
 
     mq_close(mqd).unwrap();
     let res_unlink_after_close = mq_unlink(mq_name_opened);
-    assert!(res_unlink_after_close == Err(Sys(ENOENT)) );
+    assert_eq!(res_unlink_after_close, Err(Sys(ENOENT)) );
 }

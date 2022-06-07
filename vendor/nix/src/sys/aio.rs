@@ -21,20 +21,19 @@
 //! [`aio_cancel_all`](fn.aio_cancel_all.html), though the operating system may
 //! not support this for all filesystems and devices.
 
-use {Error, Result};
-use errno::Errno;
+use crate::{Error, Result};
+use crate::errno::Errno;
 use std::os::unix::io::RawFd;
 use libc::{c_void, off_t, size_t};
-use libc;
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::mem;
 use std::ptr::{null, null_mut};
-use sys::signal::*;
+use crate::sys::signal::*;
 use std::thread;
-use sys::time::TimeSpec;
+use crate::sys::time::TimeSpec;
 
 libc_enum! {
     /// Mode for `AioCb::fsync`.  Controls whether only data or both data and
@@ -80,7 +79,7 @@ libc_enum! {
 /// Return values for [`AioCb::cancel`](struct.AioCb.html#method.cancel) and
 /// [`aio_cancel_all`](fn.aio_cancel_all.html)
 #[repr(i32)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AioCancelStat {
     /// All outstanding requests were canceled
     AioCanceled = libc::AIO_CANCELED,
@@ -102,9 +101,9 @@ pub enum Buffer<'a> {
     /// Keeps a reference to a slice
     Phantom(PhantomData<&'a mut [u8]>),
     /// Generic thing that keeps a buffer from dropping
-    BoxedSlice(Box<Borrow<[u8]>>),
+    BoxedSlice(Box<dyn Borrow<[u8]>>),
     /// Generic thing that keeps a mutable buffer from dropping
-    BoxedMutSlice(Box<BorrowMut<[u8]>>),
+    BoxedMutSlice(Box<dyn BorrowMut<[u8]>>),
 }
 
 impl<'a> Debug for Buffer<'a> {
@@ -116,14 +115,14 @@ impl<'a> Debug for Buffer<'a> {
             Buffer::None => write!(fmt, "None"),
             Buffer::Phantom(p) => p.fmt(fmt),
             Buffer::BoxedSlice(ref bs) => {
-                let borrowed : &Borrow<[u8]> = bs.borrow();
+                let borrowed : &dyn Borrow<[u8]> = bs.borrow();
                 write!(fmt, "BoxedSlice({:?})",
-                    borrowed as *const Borrow<[u8]>)
+                    borrowed as *const dyn Borrow<[u8]>)
             },
             Buffer::BoxedMutSlice(ref bms) => {
-                let borrowed : &BorrowMut<[u8]> = bms.borrow();
+                let borrowed : &dyn BorrowMut<[u8]> = bms.borrow();
                 write!(fmt, "BoxedMutSlice({:?})",
-                    borrowed as *const BorrowMut<[u8]>)
+                    borrowed as *const dyn BorrowMut<[u8]>)
             }
         }
     }
@@ -165,7 +164,7 @@ impl<'a> AioCb<'a> {
     ///
     /// It is an error to call this method while the `AioCb` is still in
     /// progress.
-    pub fn boxed_slice(&mut self) -> Option<Box<Borrow<[u8]>>> {
+    pub fn boxed_slice(&mut self) -> Option<Box<dyn Borrow<[u8]>>> {
         assert!(!self.in_progress, "Can't remove the buffer from an AioCb that's still in-progress.  Did you forget to call aio_return?");
         if let Buffer::BoxedSlice(_) = self.buffer {
             let mut oldbuffer = Buffer::None;
@@ -187,7 +186,7 @@ impl<'a> AioCb<'a> {
     ///
     /// It is an error to call this method while the `AioCb` is still in
     /// progress.
-    pub fn boxed_mut_slice(&mut self) -> Option<Box<BorrowMut<[u8]>>> {
+    pub fn boxed_mut_slice(&mut self) -> Option<Box<dyn BorrowMut<[u8]>>> {
         assert!(!self.in_progress, "Can't remove the buffer from an AioCb that's still in-progress.  Did you forget to call aio_return?");
         if let Buffer::BoxedMutSlice(_) = self.buffer {
             let mut oldbuffer = Buffer::None;
@@ -226,8 +225,6 @@ impl<'a> AioCb<'a> {
     /// [`fsync`](#method.fsync) operation.
     ///
     /// ```
-    /// # extern crate tempfile;
-    /// # extern crate nix;
     /// # use nix::errno::Errno;
     /// # use nix::Error;
     /// # use nix::sys::aio::*;
@@ -287,8 +284,6 @@ impl<'a> AioCb<'a> {
     /// Create an `AioCb` from a mutable slice and read into it.
     ///
     /// ```
-    /// # extern crate tempfile;
-    /// # extern crate nix;
     /// # use nix::errno::Errno;
     /// # use nix::Error;
     /// # use nix::sys::aio::*;
@@ -363,8 +358,6 @@ impl<'a> AioCb<'a> {
     /// Create an `AioCb` from a Vector and use it for writing
     ///
     /// ```
-    /// # extern crate tempfile;
-    /// # extern crate nix;
     /// # use nix::errno::Errno;
     /// # use nix::Error;
     /// # use nix::sys::aio::*;
@@ -394,9 +387,6 @@ impl<'a> AioCb<'a> {
     /// Create an `AioCb` from a `Bytes` object
     ///
     /// ```
-    /// # extern crate bytes;
-    /// # extern crate tempfile;
-    /// # extern crate nix;
     /// # use bytes::Bytes;
     /// # use nix::sys::aio::*;
     /// # use nix::sys::signal::SigevNotify;
@@ -419,9 +409,6 @@ impl<'a> AioCb<'a> {
     /// using an un`Box`ed `Bytes` object.
     ///
     /// ```
-    /// # extern crate bytes;
-    /// # extern crate tempfile;
-    /// # extern crate nix;
     /// # use bytes::Bytes;
     /// # use nix::sys::aio::*;
     /// # use nix::sys::signal::SigevNotify;
@@ -448,12 +435,12 @@ impl<'a> AioCb<'a> {
     /// ```
     ///
     /// [`from_slice`]: #method.from_slice
-    pub fn from_boxed_slice(fd: RawFd, offs: off_t, buf: Box<Borrow<[u8]>>,
+    pub fn from_boxed_slice(fd: RawFd, offs: off_t, buf: Box<dyn Borrow<[u8]>>,
                       prio: libc::c_int, sigev_notify: SigevNotify,
                       opcode: LioOpcode) -> AioCb<'a> {
         let mut a = AioCb::common_init(fd, prio, sigev_notify);
         {
-            let borrowed : &Borrow<[u8]> = buf.borrow();
+            let borrowed : &dyn Borrow<[u8]> = buf.borrow();
             let slice : &[u8] = borrowed.borrow();
             a.aio_nbytes = slice.len() as size_t;
             a.aio_buf = slice.as_ptr() as *mut c_void;
@@ -480,8 +467,6 @@ impl<'a> AioCb<'a> {
     /// Create an `AioCb` from a Vector and use it for reading
     ///
     /// ```
-    /// # extern crate tempfile;
-    /// # extern crate nix;
     /// # use nix::errno::Errno;
     /// # use nix::Error;
     /// # use nix::sys::aio::*;
@@ -516,12 +501,12 @@ impl<'a> AioCb<'a> {
     /// [`from_boxed_slice`]: #method.from_boxed_slice
     /// [`from_mut_slice`]: #method.from_mut_slice
     pub fn from_boxed_mut_slice(fd: RawFd, offs: off_t,
-                                mut buf: Box<BorrowMut<[u8]>>,
+                                mut buf: Box<dyn BorrowMut<[u8]>>,
                                 prio: libc::c_int, sigev_notify: SigevNotify,
                                 opcode: LioOpcode) -> AioCb<'a> {
         let mut a = AioCb::common_init(fd, prio, sigev_notify);
         {
-            let borrowed : &mut BorrowMut<[u8]> = buf.borrow_mut();
+            let borrowed : &mut dyn BorrowMut<[u8]> = buf.borrow_mut();
             let slice : &mut [u8] = borrowed.borrow_mut();
             a.aio_nbytes = slice.len() as size_t;
             a.aio_buf = slice.as_mut_ptr() as *mut c_void;
@@ -642,8 +627,6 @@ impl<'a> AioCb<'a> {
     /// Construct an `AioCb` from a slice and use it for writing.
     ///
     /// ```
-    /// # extern crate tempfile;
-    /// # extern crate nix;
     /// # use nix::errno::Errno;
     /// # use nix::Error;
     /// # use nix::sys::aio::*;
@@ -726,8 +709,6 @@ impl<'a> AioCb<'a> {
     /// result.
     ///
     /// ```
-    /// # extern crate tempfile;
-    /// # extern crate nix;
     /// # use nix::errno::Errno;
     /// # use nix::Error;
     /// # use nix::sys::aio::*;
@@ -781,8 +762,6 @@ impl<'a> AioCb<'a> {
     /// is an alternative to `aio_suspend`, used by most of the other examples.
     ///
     /// ```
-    /// # extern crate tempfile;
-    /// # extern crate nix;
     /// # use nix::errno::Errno;
     /// # use nix::Error;
     /// # use nix::sys::aio::*;
@@ -925,8 +904,6 @@ impl<'a> AioCb<'a> {
 /// descriptor.
 ///
 /// ```
-/// # extern crate tempfile;
-/// # extern crate nix;
 /// # use nix::errno::Errno;
 /// # use nix::Error;
 /// # use nix::sys::aio::*;
@@ -978,13 +955,7 @@ pub fn aio_cancel_all(fd: RawFd) -> Result<AioCancelStat> {
 ///
 /// Use `aio_suspend` to block until an aio operation completes.
 ///
-// Disable doctest due to a known bug in FreeBSD's 32-bit emulation.  The fix
-// will be included in release 11.2.
-// FIXME reenable the doc test when the CI machine gets upgraded to that release.
-// https://svnweb.freebsd.org/base?view=revision&revision=325018
-/// ```no_run
-/// # extern crate tempfile;
-/// # extern crate nix;
+/// ```
 /// # use nix::sys::aio::*;
 /// # use nix::sys::signal::SigevNotify;
 /// # use std::os::unix::io::AsRawFd;
@@ -1021,13 +992,7 @@ pub fn aio_suspend(list: &[&AioCb], timeout: Option<TimeSpec>) -> Result<()> {
 impl<'a> Debug for AioCb<'a> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("AioCb")
-            .field("aio_fildes", &self.aiocb.aio_fildes)
-            .field("aio_offset", &self.aiocb.aio_offset)
-            .field("aio_buf", &self.aiocb.aio_buf)
-            .field("aio_nbytes", &self.aiocb.aio_nbytes)
-            .field("aio_lio_opcode", &self.aiocb.aio_lio_opcode)
-            .field("aio_reqprio", &self.aiocb.aio_reqprio)
-            .field("aio_sigevent", &SigEvent::from(&self.aiocb.aio_sigevent))
+            .field("aiocb", &self.aiocb)
             .field("mutable", &self.mutable)
             .field("in_progress", &self.in_progress)
             .finish()
@@ -1097,8 +1062,6 @@ impl<'a> LioCb<'a> {
     /// [`AioCb::error`] to poll.
     ///
     /// ```
-    /// # extern crate tempfile;
-    /// # extern crate nix;
     /// # use nix::sys::aio::*;
     /// # use nix::sys::signal::SigevNotify;
     /// # use std::os::unix::io::AsRawFd;
@@ -1138,7 +1101,7 @@ impl<'a> LioCb<'a> {
         let p = self.list.as_ptr();
         Errno::result(unsafe {
             libc::lio_listio(mode as i32, p, self.list.len() as i32, sigevp)
-        }).map(|_| ())
+        }).map(drop)
     }
 
     /// Resubmits any incomplete operations with [`lio_listio`].
@@ -1154,8 +1117,6 @@ impl<'a> LioCb<'a> {
     ///
     /// # Examples
     /// ```no_run
-    /// # extern crate tempfile;
-    /// # extern crate nix;
     /// # use nix::Error;
     /// # use nix::errno::Errno;
     /// # use nix::sys::aio::*;
@@ -1219,7 +1180,6 @@ impl<'a> LioCb<'a> {
                 },
                 Err(Error::Sys(Errno::EINPROGRESS)) => {
                     // aiocb is was successfully queued; no need to do anything
-                    ()
                 },
                 Err(Error::Sys(Errno::EINVAL)) => panic!(
                     "AioCb was never submitted, or already finalized"),
@@ -1229,7 +1189,7 @@ impl<'a> LioCb<'a> {
         let p = self.list.as_ptr();
         Errno::result(unsafe {
             libc::lio_listio(mode as i32, p, self.list.len() as i32, sigevp)
-        }).map(|_| ())
+        }).map(drop)
     }
 
     /// Collect final status for an individual `AioCb` submitted as part of an

@@ -22,7 +22,7 @@ zeroize = "1.2.0"
 defer = "0.1.0"
 itertools = "0.10.0"
 rpassword = "5.0.1"
-unshare = "0.6.0"
+unshare = "0.7.0"
 
 [build-dependencies]
 install-dirs={version="0.2.1",features=["serde"]}

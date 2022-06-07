@@ -51,16 +51,16 @@ mod stdio;
 mod debug;
 mod zombies;
 
-pub use error::Error;
-pub use status::ExitStatus;
-pub use stdio::{Stdio, Fd};
-pub use pipe::{PipeReader, PipeWriter};
-pub use namespace::{Namespace};
-pub use idmap::{UidMap, GidMap};
-pub use zombies::{reap_zombies, child_events, ChildEvent};
+pub use crate::error::Error;
+pub use crate::status::ExitStatus;
+pub use crate::stdio::{Stdio, Fd};
+pub use crate::pipe::{PipeReader, PipeWriter};
+pub use crate::namespace::{Namespace};
+pub use crate::idmap::{UidMap, GidMap};
+pub use crate::zombies::{reap_zombies, child_events, ChildEvent};
 pub use nix::sys::signal::Signal;
-pub use debug::{Style, Printer};
-pub use caps::{Capability};
+pub use crate::debug::{Style, Printer};
+pub use crate::caps::{Capability};
 
 use std::ffi::{CString, OsString};
 use std::path::PathBuf;
@@ -68,11 +68,11 @@ use std::os::unix::io::RawFd;
 use std::collections::{HashMap, HashSet};
 use std::io;
 
-use pipe::PipeHolder;
+use crate::pipe::PipeHolder;
 
 use libc::{pid_t};
 
-type BoxError = Box<::std::error::Error + Send + Sync + 'static>;
+type BoxError = Box<dyn (::std::error::Error) + Send + Sync + 'static>;
 
 /// Main class for running processes. Works in the spirit of builder pattern.
 pub struct Command {
@@ -87,8 +87,8 @@ pub struct Command {
     id_map_commands: Option<(PathBuf, PathBuf)>,
     pid_env_vars: HashSet<OsString>,
     keep_caps: Option<[u32; 2]>,
-    before_unfreeze: Option<Box<FnMut(u32) -> Result<(), BoxError>>>,
-    pre_exec: Option<Box<Fn() -> Result<(), io::Error>>>,
+    before_unfreeze: Option<Box<dyn FnMut(u32) -> Result<(), BoxError>>>,
+    pre_exec: Option<Box<dyn Fn() -> Result<(), io::Error>>>,
 }
 
 /// The reference to the running child

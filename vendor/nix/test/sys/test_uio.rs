@@ -1,18 +1,20 @@
 use nix::sys::uio::*;
 use nix::unistd::*;
 use rand::{thread_rng, Rng};
+use rand::distributions::Alphanumeric;
 use std::{cmp, iter};
 use std::fs::{OpenOptions};
 use std::os::unix::io::AsRawFd;
 
-use tempdir::TempDir;
+#[cfg(not(target_os = "redox"))]
 use tempfile::tempfile;
+use tempfile::tempdir;
 
 #[test]
 fn test_writev() {
     let mut to_write = Vec::with_capacity(16 * 128);
     for _ in 0..16 {
-        let s: String = thread_rng().gen_ascii_chars().take(128).collect();
+        let s: String = thread_rng().sample_iter(&Alphanumeric).take(128).collect();
         let b = s.as_bytes();
         to_write.extend(b.iter().cloned());
     }
@@ -53,8 +55,9 @@ fn test_writev() {
 }
 
 #[test]
+#[cfg(not(target_os = "redox"))]
 fn test_readv() {
-    let s:String = thread_rng().gen_ascii_chars().take(128).collect();
+    let s:String = thread_rng().sample_iter(&Alphanumeric).take(128).collect();
     let to_write = s.as_bytes().to_vec();
     let mut storage = Vec::new();
     let mut allocated = 0;
@@ -97,6 +100,7 @@ fn test_readv() {
 }
 
 #[test]
+#[cfg(not(target_os = "redox"))]
 fn test_pwrite() {
     use std::io::Read;
 
@@ -114,7 +118,7 @@ fn test_pwrite() {
 fn test_pread() {
     use std::io::Write;
 
-    let tempdir = TempDir::new("nix-test_pread").unwrap();
+    let tempdir = tempdir().unwrap();
 
     let path = tempdir.path().join("pread_test_file");
     let mut file = OpenOptions::new().write(true).read(true).create(true)
@@ -142,7 +146,7 @@ fn test_pwritev() {
         IoVec::from_slice(&to_write[64..128]),
     ];
 
-    let tempdir = TempDir::new("nix-test_pwritev").unwrap();
+    let tempdir = tempdir().unwrap();
 
     // pwritev them into a temporary file
     let path = tempdir.path().join("pwritev_test_file");
@@ -166,7 +170,7 @@ fn test_preadv() {
     let to_write: Vec<u8> = (0..200).collect();
     let expected: Vec<u8> = (100..200).collect();
 
-    let tempdir = TempDir::new("nix-test_preadv").unwrap();
+    let tempdir = tempdir().unwrap();
 
     let path = tempdir.path().join("preadv_test_file");
 
@@ -182,9 +186,9 @@ fn test_preadv() {
 
     {
         // Borrow the buffers into IoVecs and preadv into them
-        let mut iovecs: Vec<_> = buffers.iter_mut().map(
+        let iovecs: Vec<_> = buffers.iter_mut().map(
             |buf| IoVec::from_mut_slice(&mut buf[..])).collect();
-        assert_eq!(Ok(100), preadv(file.as_raw_fd(), &mut iovecs, 100));
+        assert_eq!(Ok(100), preadv(file.as_raw_fd(), &iovecs, 100));
     }
 
     let all = buffers.concat();
@@ -199,16 +203,17 @@ fn test_process_vm_readv() {
     use nix::unistd::ForkResult::*;
     use nix::sys::signal::*;
     use nix::sys::wait::*;
+    use crate::*;
 
-    #[allow(unused_variables)]
-    let m = ::FORK_MTX.lock().expect("Mutex got poisoned by another test");
+    require_capability!(CAP_SYS_PTRACE);
+    let _ = crate::FORK_MTX.lock().expect("Mutex got poisoned by another test");
 
     // Pre-allocate memory in the child, since allocation isn't safe
     // post-fork (~= async-signal-safe)
     let mut vector = vec![1u8, 2, 3, 4, 5];
 
     let (r, w) = pipe().unwrap();
-    match fork().expect("Error: Fork Failed") {
+    match unsafe{fork()}.expect("Error: Fork Failed") {
         Parent { child } => {
             close(w).unwrap();
             // wait for child
