@@ -16,7 +16,7 @@ lazy_static="1.4.0"
 install-dirs="0.2.1"
 libc = "0.2.85"
 fake-enum = "0.1.1"
-openssl = "0.10.32"
+openssl = "0.10.48"
 bytemuck = {version="1.5.0",features=["derive"]}
 zeroize = "1.2.0"
 defer = "0.1.0"
